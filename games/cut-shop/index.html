@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Cut Shop</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="top"></header>
+      <section id="floor"><canvas id="cv"></canvas><div id="play"></div></section>
+      <nav id="tabs"></nav>
+      <main id="panel"></main>
+      <footer id="go"></footer>
+    </div>
+    <div id="modal"></div>
+    <div id="toast"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
