@@ -69,7 +69,7 @@ export function coinMesh(): THREE.Mesh {
   return m;
 }
 
-export function farmer(): { root: THREE.Group; body: THREE.Group; legL: THREE.Object3D; legR: THREE.Object3D; back: THREE.Group } {
+export function farmer(): { root: THREE.Group; body: THREE.Group; legL: THREE.Object3D; legR: THREE.Object3D; back: THREE.Group; arms: [THREE.Object3D, THREE.Object3D] } {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
@@ -90,7 +90,8 @@ export function farmer(): { root: THREE.Group; body: THREE.Group; legL: THREE.Ob
   const back = new THREE.Group();
   back.position.set(0, 0.62, -0.42);
   body.add(back);
-  return { root, body, legL, legR, back };
+  const arms = addArms(body, 0xe05b4b, 1.1, 0.4);
+  return { root, body, legL, legR, back, arms };
 }
 
 export function person(shirt: number): THREE.Group {
@@ -104,22 +105,26 @@ export function person(shirt: number): THREE.Group {
   const h = mesh(sphere(0.28, 8), hair[Math.floor(Math.random() * hair.length)], 0, 1.4, -0.04);
   h.scale.set(1, 0.6, 1);
   g.add(h);
+  addArms(g, shirt, 1.05, 0.36);
   return g;
 }
 
 export function wheatPlant(): THREE.Group {
   const g = new THREE.Group();
-  const offsets = [[-0.25, -0.2], [0.22, -0.25], [0, 0.05], [-0.2, 0.28], [0.26, 0.25]];
+  const offsets = [[-0.3, -0.3], [0.05, -0.32], [0.32, -0.25], [-0.15, 0], [0.18, 0.02], [-0.32, 0.3], [0.02, 0.3], [0.3, 0.32]];
   for (const [x, z] of offsets) {
-    g.add(mesh(cyl(0.03, 0.04, 0.7, 4), 0xb9a03a, x, 0.35, z, false));
-    g.add(mesh(cone(0.09, 0.36, 5), COLORS.wheat, x, 0.82, z, false));
+    const h = 0.6 + Math.random() * 0.25;
+    g.add(mesh(cyl(0.025, 0.035, h, 4), 0xc8a63e, x, h / 2, z, false));
+    g.add(mesh(cone(0.085, 0.34, 5), Math.random() < 0.5 ? COLORS.wheat : 0xf5d76e, x, h + 0.12, z, false));
   }
   return g;
 }
 
-export function fieldTile(): THREE.Mesh {
-  const m = mesh(box(1.3, 0.12, 1.3), COLORS.dirt, 0, 0.06, 0, false);
-  return m;
+export function fieldTile(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(1.34, 0.12, 1.34), COLORS.dirtDark, 0, 0, 0, false));
+  for (let i = -1; i <= 1; i++) g.add(mesh(box(1.2, 0.1, 0.3), COLORS.dirt, 0, 0.08, i * 0.42, false));
+  return g;
 }
 
 export function stall(): THREE.Group {
@@ -326,4 +331,134 @@ export class Label {
     }
     this.tex.needsUpdate = true;
   }
+}
+
+// ---------------------------------------------------------------
+// Extra scenery and life
+// ---------------------------------------------------------------
+
+/** A small bundle of dollar bills. */
+export function cashMesh(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(0.56, 0.1, 0.28), 0x5dbb63, 0, 0.05, 0, false));
+  g.add(mesh(box(0.2, 0.11, 0.29), 0xe9f7e1, 0, 0.05, 0, false));
+  return g;
+}
+
+export function barn(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(4.4, 2.6, 3.4), 0xc0392b, 0, 1.3, 0));
+  const roofL = mesh(box(2.6, 0.18, 3.7), 0x5d4037, -1.05, 3.1, 0);
+  roofL.rotation.z = 0.6;
+  const roofR = mesh(box(2.6, 0.18, 3.7), 0x5d4037, 1.05, 3.1, 0);
+  roofR.rotation.z = -0.6;
+  g.add(roofL, roofR);
+  g.add(mesh(box(1.6, 1.8, 0.1), 0xf4efe6, 0, 0.9, 1.72));
+  g.add(mesh(box(1.4, 1.6, 0.12), 0x8e2a1f, 0, 0.9, 1.74));
+  g.add(mesh(box(0.12, 1.9, 0.14), 0xf4efe6, 0, 0.9, 1.78));
+  return g;
+}
+
+export function silo(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(cyl(1.0, 1.0, 4.2, 12), 0xdfe6e9, 0, 2.1, 0));
+  g.add(mesh(sphere(1.0, 12), 0x95a5a6, 0, 4.2, 0));
+  for (let y = 0.8; y < 4; y += 0.8) g.add(mesh(cyl(1.03, 1.03, 0.08, 12), 0xb2bec3, 0, y, 0, false));
+  return g;
+}
+
+export function house(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(4, 2.2, 3), 0xf6e7c8, 0, 1.1, 0));
+  const roof = mesh(cone(3.2, 1.6, 4), 0x2d6a4f, 0, 3.0, 0);
+  roof.rotation.y = Math.PI / 4;
+  roof.scale.set(1, 1, 0.8);
+  g.add(roof);
+  g.add(mesh(box(0.8, 1.3, 0.1), 0x6e4524, 0, 0.65, 1.52));
+  g.add(mesh(box(0.7, 0.6, 0.1), 0xbfe3ff, -1.2, 1.3, 1.52));
+  g.add(mesh(box(0.7, 0.6, 0.1), 0xbfe3ff, 1.2, 1.3, 1.52));
+  g.add(mesh(box(0.5, 1.2, 0.5), 0xa7a39a, 1.2, 3.1, -0.4));
+  return g;
+}
+
+export function chicken(): THREE.Group {
+  const g = new THREE.Group();
+  const body = mesh(sphere(0.22, 7), 0xffffff, 0, 0.3, 0);
+  body.scale.set(1, 0.9, 1.25);
+  g.add(body);
+  g.add(mesh(cone(0.12, 0.2, 4), 0xffffff, 0, 0.42, -0.25));
+  const head = new THREE.Group();
+  head.name = "head";
+  head.position.set(0, 0.46, 0.18);
+  head.add(mesh(sphere(0.12, 6), 0xffffff, 0, 0.06, 0.04));
+  head.add(mesh(cone(0.04, 0.1, 4), 0xffa000, 0, 0.05, 0.18, false).rotateX(Math.PI / 2));
+  head.add(mesh(box(0.04, 0.1, 0.1), 0xe53935, 0, 0.2, 0.04, false));
+  g.add(head);
+  g.add(mesh(box(0.03, 0.18, 0.03), 0xffa000, -0.08, 0.09, 0, false));
+  g.add(mesh(box(0.03, 0.18, 0.03), 0xffa000, 0.08, 0.09, 0, false));
+  return g;
+}
+
+export function cow(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(0.9, 0.8, 1.6), 0xffffff, 0, 1.0, 0));
+  g.add(mesh(box(0.92, 0.5, 0.6), 0x2d2d2d, 0, 1.15, -0.3, false));
+  g.add(mesh(box(0.5, 0.4, 0.5), 0x2d2d2d, 0.2, 1.1, 0.5, false));
+  for (const [x, z] of [[-0.3, -0.6], [0.3, -0.6], [-0.3, 0.6], [0.3, 0.6]]) g.add(mesh(box(0.18, 0.6, 0.18), 0xffffff, x, 0.3, z));
+  const head = new THREE.Group();
+  head.name = "head";
+  head.position.set(0, 1.2, 0.9);
+  head.add(mesh(box(0.5, 0.5, 0.55), 0xffffff, 0, 0, 0.1));
+  head.add(mesh(box(0.42, 0.24, 0.2), 0xf3a6b5, 0, -0.12, 0.42));
+  head.add(mesh(box(0.08, 0.2, 0.08), 0xe8dcc0, -0.2, 0.32, 0));
+  head.add(mesh(box(0.08, 0.2, 0.08), 0xe8dcc0, 0.2, 0.32, 0));
+  g.add(head);
+  g.scale.setScalar(0.9);
+  return g;
+}
+
+export function cloud(): THREE.Group {
+  const g = new THREE.Group();
+  const m = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+  const n = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    const s = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9 + Math.random() * 0.8, 0), m);
+    s.position.set(i * 1.1 - n * 0.5, Math.random() * 0.5, Math.random() * 0.8);
+    s.castShadow = true;
+    g.add(s);
+  }
+  return g;
+}
+
+export function butterfly(color: number): THREE.Group {
+  const g = new THREE.Group();
+  const wing = new THREE.PlaneGeometry(0.18, 0.14);
+  const wm = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+  const l = new THREE.Group();
+  const lw = new THREE.Mesh(wing, wm);
+  lw.position.x = -0.09;
+  lw.rotation.x = -Math.PI / 2;
+  l.add(lw);
+  const r = new THREE.Group();
+  const rw = new THREE.Mesh(wing, wm);
+  rw.position.x = 0.09;
+  rw.rotation.x = -Math.PI / 2;
+  r.add(rw);
+  g.add(l, r);
+  return g;
+}
+
+/** Arms that swing when walking. Adds two pivots to a body group. */
+export function addArms(body: THREE.Object3D, color: number, y: number, x: number): [THREE.Object3D, THREE.Object3D] {
+  const make = (side: number) => {
+    const pivot = new THREE.Group();
+    pivot.name = "arm";
+    pivot.position.set(side * x, y, 0);
+    const arm = mesh(box(0.16, 0.5, 0.18), color, 0, -0.22, 0);
+    pivot.add(arm);
+    pivot.add(mesh(sphere(0.1, 6), COLORS.skin, 0, -0.5, 0));
+    body.add(pivot);
+    return pivot;
+  };
+  return [make(-1), make(1)];
 }

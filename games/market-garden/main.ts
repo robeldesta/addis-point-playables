@@ -2,6 +2,7 @@ import * as THREE from "three";
 import * as P from "../../src/platform/platform";
 import * as M from "./models";
 import { Sfx } from "./sfx";
+import { setupDecor } from "./decor";
 
 type Kind = M.ItemKind;
 const GAME_ID = "market-garden";
@@ -16,20 +17,19 @@ const host = document.getElementById("game")!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9fd8f5);
-scene.fog = new THREE.Fog(0x9fd8f5, 30, 60);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
 let camOffset = V(0, 15, 10.5);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x5d7a3a, 1.7));
+scene.add(new THREE.HemisphereLight(0xdff4ff, 0x6b8f3a, 1.9));
 const sun = new THREE.DirectionalLight(0xfff2d6, 2.2);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.radius = 3;
 Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, near: 1, far: 60 });
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target);
@@ -49,44 +49,12 @@ window.addEventListener("resize", resize);
 resize();
 
 // ------------------------------------------------------------------
-// Scenery
+// Scenery (see decor.ts)
 // ------------------------------------------------------------------
-const ground = M.mesh(new THREE.PlaneGeometry(140, 140), M.COLORS.grass, 0, 0, 0, false);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
-
-function flat(w: number, d: number, color: number, x: number, z: number, y = 0.01) {
-  const m = M.mesh(new THREE.PlaneGeometry(w, d), color, x, y, z, false);
-  m.rotation.x = -Math.PI / 2;
-  scene.add(m);
-  return m;
-}
-flat(2.2, 24, M.COLORS.path, -0.6, -2);
-flat(22, 2.0, M.COLORS.path, 0, 8.2);
-flat(5, 1.6, M.COLORS.path, -3.2, -6.8);
-flat(1.8, 9, M.COLORS.path, -8.2, 4.2);
-flat(140, 3.2, M.COLORS.water, 0, -19.5, 0.02);
-flat(140, 0.5, 0x3f9fd4, 0, -18, 0.03);
-
-for (let i = 0; i < 46; i++) {
-  const t = M.tree();
-  const side = i % 2 ? 1 : -1;
-  t.position.set(side * (12.5 + Math.random() * 10), 0, -24 + Math.random() * 40);
-  scene.add(t);
-}
-for (let i = 0; i < 10; i++) {
-  const t = M.tree();
-  t.position.set(-10 + i * 2.4 + Math.random(), 0, -23 - Math.random() * 3);
-  scene.add(t);
-}
-const f1 = M.fence(10);
-f1.position.set(-11.5, 0, 11.5);
-scene.add(f1);
-const f2 = M.fence(10);
-f2.position.set(1.5, 0, 11.5);
-scene.add(f2);
+const decor = setupDecor(scene);
 
 const fmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "K" : String(Math.floor(n)));
+const money = (n: number) => "$" + fmt(n);
 
 // ------------------------------------------------------------------
 // Ground decals (zone markers and build pads)
@@ -150,7 +118,7 @@ class Decal {
     ctx.font = "bold 40px Arial, sans-serif";
     ctx.fillText(name, W / 2, H * 0.28);
     ctx.font = "bold 64px Arial, sans-serif";
-    ctx.fillText(`$${fmt(remaining)}`, W / 2, H * 0.64);
+    ctx.fillText(money(remaining), W / 2, H * 0.64);
     this.tex.needsUpdate = true;
   }
   dispose() {
@@ -240,22 +208,22 @@ class Pile {
   kinds(): Kind[] { return this.items.map((i) => i.kind); }
 }
 
-/** Coins waiting at the stall. */
+/** Dollars waiting at the stall, shown as stacks of bills. */
 class Cash {
   value = 0;
-  coins: THREE.Mesh[] = [];
+  bills: THREE.Object3D[] = [];
   constructor(public group: THREE.Group) {}
   private slot(i: number) {
     const col = i % 6;
-    return V((col % 3) * 0.48 - 0.48, Math.floor(i / 6) * 0.075 + 0.04, Math.floor(col / 3) * 0.48 - 0.24);
+    return V((col % 3) * 0.62 - 0.62, Math.floor(i / 6) * 0.1 + 0.05, Math.floor(col / 3) * 0.4 - 0.2);
   }
   add(v: number, from?: THREE.Vector3) {
     this.value += v;
-    const want = Math.min(60, Math.ceil(this.value / 3));
-    while (this.coins.length < want) {
-      const c = M.coinMesh();
-      const target = this.slot(this.coins.length);
-      this.coins.push(c);
+    const want = Math.min(60, Math.ceil(this.value / 4));
+    while (this.bills.length < want) {
+      const c = M.cashMesh();
+      const target = this.slot(this.bills.length);
+      this.bills.push(c);
       if (from) {
         fly(c, from, () => this.group.localToWorld(target.clone()), () => { if (!c.userData.dead) { this.group.add(c); c.position.copy(target); } }, 0.35, 1.5);
       } else {
@@ -267,16 +235,118 @@ class Cash {
   collect(to: () => THREE.Vector3): number {
     const v = this.value;
     this.value = 0;
-    this.coins.forEach((c, i) => {
+    this.bills.forEach((c, i) => {
       const from = c.getWorldPosition(V());
       c.userData.dead = true;
       c.parent?.remove(c);
-      const nc = M.coinMesh();
-      setTimeout(() => fly(nc, from, to, undefined, 0.25, 1.0), i * 12);
+      setTimeout(() => fly(M.cashMesh(), from, to, undefined, 0.25, 1.0), i * 12);
     });
-    this.coins = [];
+    this.bills = [];
     return v;
   }
+}
+
+/** Speech bubble over a customer: what they want, how many, and how patient they still are. */
+class Bubble {
+  sprite: THREE.Sprite;
+  private ctx: CanvasRenderingContext2D;
+  private tex: THREE.CanvasTexture;
+  private key = "";
+  constructor() {
+    const c = document.createElement("canvas");
+    c.width = 200;
+    c.height = 120;
+    this.ctx = c.getContext("2d")!;
+    this.tex = new THREE.CanvasTexture(c);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex, depthTest: false, transparent: true }));
+    this.sprite.scale.set(2.1, 1.26, 1);
+    this.sprite.renderOrder = 15;
+  }
+  set(kind: Kind, got: number, want: number, patience: number, angry: boolean) {
+    const p = Math.round(patience * 20);
+    const key = `${kind}${got}${want}${p}${angry}`;
+    if (key === this.key) return;
+    this.key = key;
+    const g = this.ctx;
+    g.clearRect(0, 0, 200, 120);
+    g.fillStyle = angry ? "#ff6b6b" : "#ffffff";
+    g.beginPath();
+    g.roundRect(6, 6, 188, 84, 22);
+    g.moveTo(88, 88);
+    g.lineTo(100, 112);
+    g.lineTo(112, 88);
+    g.fill();
+    if (angry) {
+      g.fillStyle = "#fff";
+      g.font = "900 50px Arial, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText("Grr!", 100, 50);
+    } else {
+      drawIcon(g, kind, 52, 46);
+      g.fillStyle = "#3e2a1f";
+      g.font = "900 40px Arial, sans-serif";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText(got > 0 ? `${got}/${want}` : `x${want}`, 92, 44);
+      // patience bar
+      g.fillStyle = "#e0e0e0";
+      g.fillRect(24, 74, 152, 8);
+      g.fillStyle = patience > 0.5 ? "#43a047" : patience > 0.25 ? "#ffa000" : "#e53935";
+      g.fillRect(24, 74, 152 * patience, 8);
+    }
+    this.tex.needsUpdate = true;
+  }
+}
+
+function drawIcon(g: CanvasRenderingContext2D, kind: Kind, x: number, y: number) {
+  g.save();
+  g.translate(x, y);
+  if (kind === "wheat") {
+    g.strokeStyle = "#b8962e";
+    g.lineWidth = 4;
+    for (const a of [-0.35, 0, 0.35]) {
+      g.save();
+      g.rotate(a);
+      g.beginPath();
+      g.moveTo(0, 26);
+      g.lineTo(0, -6);
+      g.stroke();
+      g.fillStyle = "#f0c94a";
+      for (let k = 0; k < 4; k++) {
+        g.beginPath();
+        g.ellipse(-4, -6 - k * 7, 4, 6, -0.5, 0, Math.PI * 2);
+        g.ellipse(4, -6 - k * 7, 4, 6, 0.5, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.restore();
+    }
+  } else if (kind === "flour") {
+    g.fillStyle = "#f7f3ea";
+    g.strokeStyle = "#cfc6b4";
+    g.lineWidth = 3;
+    g.beginPath();
+    g.roundRect(-22, -22, 44, 50, 10);
+    g.fill();
+    g.stroke();
+    g.fillStyle = "#6aa0d8";
+    g.fillRect(-22, -2, 44, 10);
+  } else {
+    g.fillStyle = "#c98a3c";
+    g.beginPath();
+    g.ellipse(0, 4, 30, 20, 0, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = "#f3d19c";
+    g.lineWidth = 4;
+    for (const dx of [-12, 0, 12]) {
+      g.beginPath();
+      g.moveTo(dx - 5, -6);
+      g.lineTo(dx + 5, 10);
+      g.stroke();
+    }
+  }
+  g.restore();
 }
 
 // ------------------------------------------------------------------
@@ -634,41 +704,64 @@ function completePad(lp: LivePad) {
 // ------------------------------------------------------------------
 // Customers
 // ------------------------------------------------------------------
-interface Customer { obj: THREE.Group; state: "walk" | "leave"; want: number; got: number; paid: number; timer: number; label: M.Label; hands: Pile }
+interface Customer {
+  obj: THREE.Group; state: "walk" | "leave"; kind: Kind; want: number; got: number; paid: number;
+  timer: number; patience: number; maxPatience: number; waited: number; angry: boolean; bubble: Bubble; hands: Pile;
+}
 const customers: Customer[] = [];
 const SHIRTS = [0xe57373, 0x64b5f6, 0x81c784, 0xffb74d, 0xba68c8, 0x4db6ac, 0xf06292, 0xfff176];
-let spawnTimer = 0;
+let spawnTimer = 1, lostSales = 0;
 const queueSlot = (i: number) => (i === 0 ? V(-7.9, 0, 4.4) : V(-8.4, 0, 4.4 + i * 1.2));
 
 function walkAnim(obj: THREE.Object3D, moving: boolean) {
   const k = moving ? Math.sin(clock * 12 + obj.id) : 0;
   obj.children[0].rotation.x = k * 0.5;
   obj.children[1].rotation.x = -k * 0.5;
+  const arms = obj.children.filter((ch) => ch.name === "arm");
+  if (arms.length === 2) {
+    arms[0].rotation.x = -k * 0.6;
+    arms[1].rotation.x = k * 0.6;
+  }
   obj.position.y = moving ? Math.abs(k) * 0.06 : 0;
+}
+
+/** What shoppers ask for. Processed goods are more popular once you can make them. */
+function pickDemand(): { kind: Kind; want: number } {
+  const options: [Kind, number][] = [["wheat", 1]];
+  if (built.has("windmill")) options.push(["flour", 1.4]);
+  if (built.has("bakery")) options.push(["bread", 1.8]);
+  let r = Math.random() * options.reduce((a, [, w]) => a + w, 0);
+  let kind: Kind = "wheat";
+  for (const [k, w] of options) {
+    if ((r -= w) <= 0) { kind = k; break; }
+  }
+  const tier = options.length;
+  return { kind, want: 1 + Math.floor(Math.random() * (1 + tier)) };
 }
 
 function updateCustomers(dt: number) {
   spawnTimer -= dt;
-  const max = built.has("bakery") ? 6 : 4;
-  if (spawnTimer <= 0 && customers.length < max) {
-    spawnTimer = built.has("bakery") ? 2.0 : 3.0;
+  const waiting = customers.filter((c) => c.state === "walk").length;
+  // A long line puts people off: no new shoppers join when it's full.
+  if (spawnTimer <= 0 && waiting < 6) {
+    spawnTimer = (built.has("bakery") ? 2.6 : 3.4) * (0.7 + Math.random() * 0.6);
     const obj = M.person(SHIRTS[Math.floor(Math.random() * SHIRTS.length)]);
     obj.position.set(-17, 0, 8.2);
     scene.add(obj);
-    const label = new M.Label(160, 80, 1.3);
-    label.sprite.position.set(0, 2.2, 0);
-    label.sprite.visible = false;
-    obj.add(label.sprite);
+    const bubble = new Bubble();
+    bubble.sprite.position.set(0, 2.6, 0);
+    obj.add(bubble.sprite);
     const hg = new THREE.Group();
-    hg.position.set(0, 0.9, 0.35);
+    hg.position.set(0, 0.9, 0.38);
     obj.add(hg);
-    const maxWant = built.has("bakery") ? 5 : built.has("windmill") ? 4 : 3;
-    customers.push({ obj, state: "walk", want: 1 + Math.floor(Math.random() * maxWant), got: 0, paid: 0, timer: 0, label, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
+    const d = pickDemand();
+    const maxPatience = 26 + d.want * 4;
+    customers.push({ obj, state: "walk", kind: d.kind, want: d.want, got: 0, paid: 0, timer: 0, patience: maxPatience, maxPatience, waited: 0, angry: false, bubble, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
   }
   let queueIdx = 0;
   for (const c of [...customers]) {
     if (c.state === "leave") {
-      c.label.sprite.visible = false;
+      c.bubble.sprite.visible = c.angry;
       if (moveTo(c.obj, V(-17, 0, 1.5), 3.2, dt)) {
         scene.remove(c.obj);
         customers.splice(customers.indexOf(c), 1);
@@ -678,31 +771,40 @@ function updateCustomers(dt: number) {
     }
     const arrived = moveTo(c.obj, queueSlot(queueIdx), 2.8, dt);
     walkAnim(c.obj, !arrived);
+    c.bubble.set(c.kind, c.got, c.want, c.patience / c.maxPatience, false);
     if (arrived) {
       let diff = Math.PI / 2 - c.obj.rotation.y;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
       c.obj.rotation.y += diff * Math.min(1, dt * 8);
+      c.patience -= dt;
       if (queueIdx === 0) {
-        c.label.sprite.visible = true;
-        c.label.set(`${c.got} / ${c.want}`, "WANTS");
         c.timer -= dt;
-        if (c.timer <= 0 && shelf.count > 0) {
-          c.timer = 0.3;
-          // Customers take the most valuable thing on the shelf.
-          const best = (["bread", "flour", "wheat"] as Kind[]).find((k) => shelf.countOf(k) > 0)!;
-          const it = shelf.take((k) => k === best);
+        if (c.timer <= 0) {
+          // Shoppers only buy what they came for.
+          const it = shelf.take((k) => k === c.kind);
           if (it) {
+            c.timer = 0.3;
             c.hands.add(it.kind, it.at);
             c.got++;
             c.paid += PRICE[it.kind];
+            c.patience = Math.min(c.maxPatience, c.patience + 4);
             sfx.tick();
-          }
+          } else c.waited += dt;
           if (c.got >= c.want) {
             cash.add(c.paid, c.obj.position.clone().setY(1.2));
+            decor.floatText(money(c.paid), c.obj.position.clone().setY(2.6));
             sfx.coin();
             c.state = "leave";
           }
         }
+      }
+      if (c.patience <= 0 && c.state === "walk") {
+        c.state = "leave";
+        c.angry = true;
+        c.bubble.set(c.kind, c.got, c.want, 0, true);
+        if (c.paid > 0) cash.add(c.paid, c.obj.position.clone().setY(1.2));
+        lostSales++;
+        if (lostSales % 2 === 1) toast(`A customer gave up waiting for ${c.kind}`);
       }
     }
     queueIdx++;
@@ -762,6 +864,7 @@ function keyMove() {
 // ------------------------------------------------------------------
 // Player logic
 // ------------------------------------------------------------------
+let playerMoving = false;
 let walkPhase = 0, dropTimer = 0, payTick = 0, fullWarn = 0;
 const playerPos = () => farmer.root.position;
 const near = (p: THREE.Vector3, r: number) => Math.hypot(p.x - playerPos().x, p.z - playerPos().z) < r;
@@ -782,6 +885,9 @@ function updatePlayer(dt: number) {
   farmer.legR.rotation.x = -k * 0.6;
   farmer.body.position.y = Math.abs(k) * 0.08;
   farmer.back.rotation.x = -k * 0.03;
+  farmer.arms[0].rotation.x = -k * 0.7;
+  farmer.arms[1].rotation.x = k * 0.7;
+  playerMoving = dir.lengthSq() > 0.001;
 
   // bounds and building collisions
   pos.x = THREE.MathUtils.clamp(pos.x, -11.5, 11.5);
@@ -805,6 +911,7 @@ function updatePlayer(dt: number) {
     }
     t.growth = 0;
     bag.add("wheat", t.pos.clone().setY(0.7));
+    decor.burst(t.pos.clone().setY(0.5), 0xf0c94a, 5);
     sfx.pop();
   }
 
@@ -832,6 +939,7 @@ function updatePlayer(dt: number) {
 
   if (near(cashZone.pos, cashZone.r) && cash.value > 0) {
     const v = cash.collect(() => playerPos().clone().setY(1.4));
+    decor.floatText("+" + money(v), playerPos().clone().setY(2.8), "#ffe066");
     coins += v;
     lifetime += v;
     P.sendScore(lifetime);
@@ -853,7 +961,7 @@ function updatePlayer(dt: number) {
     lp.coinTimer -= dt;
     if (lp.coinTimer <= 0) {
       lp.coinTimer = 0.05;
-      fly(M.coinMesh(), playerPos().clone().setY(1.3), () => V(lp.def.x, 0.1, lp.def.z), undefined, 0.22, 0.8);
+      fly(M.cashMesh(), playerPos().clone().setY(1.3), () => V(lp.def.x, 0.1, lp.def.z), undefined, 0.22, 0.8);
       if (++payTick % 2 === 0) sfx.tick();
     }
     if (lp.paid >= lp.def.cost) completePad(lp);
@@ -892,16 +1000,23 @@ function updateGuide() {
   let target: THREE.Vector3 | null = null;
   let msg = "";
   const nextPad = livePads[0];
+  const front = customers.find((c) => c.state === "walk");
   if (lifetime === 0 && cash.value === 0) {
     if (bag.count === 0 && shelf.count === 0) { msg = "Walk into the wheat to harvest it"; target = V(4, 0, -1.8); }
     else if (bag.count > 0) { msg = "Carry it to the market stall"; target = sellZone.pos; }
     else msg = "Customers are buying...";
   } else if (cash.value > 0 && lifetime < 20) {
-    msg = "Collect your coins"; target = cashZone.pos;
+    msg = "Collect your cash"; target = cashZone.pos;
   } else if (built.size === 0 && nextPad && coins >= 10) {
     msg = "Stand on the pad to build"; target = V(nextPad.def.x, 0, nextPad.def.z);
   } else if (built.has("windmill") && built.size <= 2 && lifetime < 250 && bag.countOf("wheat") > 0) {
     msg = "Flour sells for more: drop wheat at the windmill"; target = mill.inZone;
+  } else if (front && front.waited > 2.5 && shelf.countOf(front.kind) === 0) {
+    const k = front.kind;
+    msg = `Your customer wants ${k}!`;
+    const src = k === "wheat" ? null : k === "flour" ? mill : bakeryM;
+    if (bag.countOf(k) > 0) target = sellZone.pos;
+    else if (src && src.output.count > 0) target = src.outZone;
   } else if (nextPad && coins + nextPad.paid >= nextPad.def.cost) {
     target = V(nextPad.def.x, 0, nextPad.def.z);
   }
@@ -973,6 +1088,7 @@ function frame(now: number) {
     v.obj.position.y = moving ? Math.abs(Math.sin(clock * 20)) * 0.04 : 0;
   }
   spinners.forEach((f) => f(dt));
+  decor.update(dt, clock, farmer.root.position, playerMoving);
   updateFlyers(dt);
   updatePops(dt);
   updateBits(dt);
@@ -1036,7 +1152,7 @@ P.onAudioChange((on) => (sfx.enabled = on));
 if (location.search.includes("debug")) {
   (window as unknown as Record<string, unknown>).mg = {
     go: (x: number, z: number) => farmer.root.position.set(x, 0, z),
-    state: () => ({ coins, lifetime, bag: bag.count, shelf: shelf.count, cash: cash.value, built: [...built] }),
+    state: () => ({ coins, lifetime, bag: bag.count, shelf: shelf.count, cash: cash.value, built: [...built], q: customers.map((c) => `${c.state}:${c.kind}x${c.want}:w${c.waited.toFixed(1)}:p${c.patience.toFixed(0)}`) }),
   };
 }
 
