@@ -26,7 +26,7 @@ export const cropById = (id: string): Crop => CROPS.find((c) => c.id === id)!;
 export const MAX_PLOTS = 12;
 export const START_PLOTS = 3;
 
-export type UpgradeId = "plot" | "growth" | "price" | "helper";
+export type UpgradeId = "plot" | "growth" | "price";
 
 export interface UpgradeDef {
   id: UpgradeId;
@@ -58,19 +58,44 @@ export const UPGRADES: UpgradeDef[] = [
     max: 15,
     cost: (l) => Math.round(80 * Math.pow(2.0, l)),
   },
-  {
-    id: "helper",
-    name: "Farmhand",
-    describe: (l) =>
-      l === 0 ? "Auto-harvests and replants" : `Works every ${helperInterval(l).toFixed(1)}s, earns offline`,
-    max: 5,
-    cost: (l) => Math.round(400 * Math.pow(3.2, l)),
-  },
 ];
 
 export const growthMult = (lvl: number) => Math.pow(0.88, lvl);
 export const priceMult = (lvl: number) => 1 + 0.15 * lvl;
-export const helperInterval = (lvl: number) => (lvl <= 0 ? Infinity : 3 / lvl);
+
+// Machines: one-time buys that unlock in order as the farm grows.
+export type MachineId = "well" | "windmill" | "tractor" | "harvester" | "dam";
+
+export interface MachineDef {
+  id: MachineId;
+  name: string;
+  cost: number;
+  desc: string;
+}
+
+export const MACHINES: MachineDef[] = [
+  { id: "well", name: "Water well", cost: 250, desc: "Crops grow 25% faster" },
+  { id: "windmill", name: "Windmill", cost: 1500, desc: "Mills your crops: +30% sale price" },
+  { id: "tractor", name: "Tractor", cost: 6000, desc: "Plants empty plots for you" },
+  { id: "harvester", name: "Harvester", cost: 25000, desc: "Harvests ripe crops, earns while you're away" },
+  { id: "dam", name: "Hydro dam", cost: 120000, desc: "Powers it all: machines 2x faster, +25% growth, full offline pay" },
+];
+
+export const has = (s: State, m: MachineId) => s.machines.includes(m);
+
+export function buyMachine(s: State, id: MachineId): boolean {
+  const idx = MACHINES.findIndex((m) => m.id === id);
+  const m = MACHINES[idx];
+  if (has(s, id) || s.coins < m.cost) return false;
+  if (idx > 0 && !has(s, MACHINES[idx - 1].id)) return false;
+  s.coins -= m.cost;
+  s.machines.push(id);
+  return true;
+}
+
+/** Seconds between tractor/harvester passes (Infinity when you have neither). */
+export const machineInterval = (s: State) =>
+  !has(s, "tractor") && !has(s, "harvester") ? Infinity : has(s, "dam") ? 1 : 2;
 
 export interface Plot {
   crop: string | null;
@@ -91,6 +116,7 @@ export interface State {
   unlocked: string[];
   inventory: Record<string, number>;
   levels: Record<UpgradeId, number>;
+  machines: MachineId[];
   selected: string;
   order: Order | null;
   lastSeen: number;
@@ -104,7 +130,8 @@ export function newState(now: number): State {
     plots: Array.from({ length: START_PLOTS }, () => ({ crop: null, plantedAt: 0 })),
     unlocked: ["wheat"],
     inventory: {},
-    levels: { plot: 0, growth: 0, price: 0, helper: 0 },
+    levels: { plot: 0, growth: 0, price: 0 },
+    machines: [],
     selected: "wheat",
     order: null,
     lastSeen: now,
@@ -118,17 +145,20 @@ export function parseState(raw: string, now: number): State {
     if (s.v !== 1 || !Array.isArray(s.plots)) return newState(now);
     // Fill in anything a future/older version may be missing.
     const base = newState(now);
-    return { ...base, ...s, levels: { ...base.levels, ...s.levels } };
+    return { ...base, ...s, levels: { ...base.levels, ...s.levels }, machines: s.machines ?? [] };
   } catch {
     return newState(now);
   }
 }
 
 export const growSeconds = (s: State, cropId: string) =>
-  cropById(cropId).grow * growthMult(s.levels.growth);
+  cropById(cropId).grow *
+  growthMult(s.levels.growth) *
+  (has(s, "well") ? 0.75 : 1) *
+  (has(s, "dam") ? 0.75 : 1);
 
 export const salePrice = (s: State, cropId: string) =>
-  Math.round(cropById(cropId).sell * priceMult(s.levels.price));
+  Math.round(cropById(cropId).sell * priceMult(s.levels.price) * (has(s, "windmill") ? 1.3 : 1));
 
 /** 0..1 growth progress of a plot. */
 export function progress(s: State, p: Plot, now: number): number {
@@ -221,35 +251,34 @@ export function buyUpgrade(s: State, id: UpgradeId): boolean {
   return true;
 }
 
-/** Farmhand: harvest every ripe plot, replant with the selected crop if affordable. */
-export function helperTick(s: State, now: number): number {
-  let harvested = 0;
+/** One pass of the machines: harvester picks ripe plots, tractor replants empty ones. */
+export function machineTick(s: State, now: number): number {
+  let changed = 0;
   s.plots.forEach((p, i) => {
-    if (isRipe(s, p, now)) {
-      const id = p.crop!;
+    if (has(s, "harvester") && isRipe(s, p, now)) {
       harvest(s, i, now);
-      harvested++;
-      plant(s, i, s.unlocked.includes(id) ? id : s.selected, now);
+      changed++;
     }
-    if (!p.crop) plant(s, i, s.selected, now);
+    if (has(s, "tractor") && !p.crop && plant(s, i, s.selected, now)) changed++;
   });
-  return harvested;
+  return changed;
 }
 
 const MAX_OFFLINE_SEC = 8 * 3600;
 
 /**
- * Coins earned while away. Only with a farmhand. Each plot keeps cycling its
- * crop, and earnings are paid at half rate (a common idle-game convention).
+ * Coins earned while away. Needs the harvester. Each plot keeps cycling the
+ * selected crop; pay is half rate, or full rate with the hydro dam.
  */
 export function offlineEarnings(s: State, now: number): number {
-  if (s.levels.helper <= 0) return 0;
+  if (!has(s, "harvester")) return 0;
   const away = Math.min(MAX_OFFLINE_SEC, Math.max(0, (now - s.lastSeen) / 1000));
   if (away < 30) return 0;
   const cropId = s.selected;
-  const cycle = growSeconds(s, cropId) + helperInterval(s.levels.helper);
+  const cycle = growSeconds(s, cropId) + machineInterval(s);
   const profitPerCycle = salePrice(s, cropId) - cropById(cropId).seed;
-  return Math.max(0, Math.floor((away / cycle) * profitPerCycle * s.plots.length * 0.5));
+  const rate = has(s, "dam") ? 1 : 0.5;
+  return Math.max(0, Math.floor((away / cycle) * profitPerCycle * s.plots.length * rate));
 }
 
 export function formatNum(n: number): string {

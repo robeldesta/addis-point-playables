@@ -25,7 +25,7 @@ const text = (s: Phaser.Scene, x: number, y: number, str: string, size: number, 
   s.add.text(x, y, str, { fontFamily: FONT, fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
 
 // Field layout: 3 columns, up to 4 rows.
-const PLOT_W = 196, PLOT_H = 148, GAP = 16, FIELD_X = (W - (3 * PLOT_W + 2 * GAP)) / 2, FIELD_Y = 150;
+const PLOT_W = 196, PLOT_H = 118, GAP = 12, FIELD_X = (W - (3 * PLOT_W + 2 * GAP)) / 2, FIELD_Y = 150;
 const plotPos = (i: number) => ({
   x: FIELD_X + (i % 3) * (PLOT_W + GAP) + PLOT_W / 2,
   y: FIELD_Y + Math.floor(i / 3) * (PLOT_H + GAP) + PLOT_H / 2,
@@ -54,7 +54,9 @@ class MarketGarden extends Phaser.Scene {
   private orderBg!: Phaser.GameObjects.Rectangle;
   private upgradePanel!: Phaser.GameObjects.Container;
   private upgradeRows: { id: L.UpgradeId; desc: Phaser.GameObjects.Text; btn: Phaser.GameObjects.Rectangle; btnText: Phaser.GameObjects.Text; title: Phaser.GameObjects.Text }[] = [];
-  private helperClock = 0;
+  private machineClock = 0;
+  private machineViews: { id: L.MachineId; icon: Phaser.GameObjects.Image; extra?: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text; owned: boolean }[] = [];
+  private machineRows: { id: L.MachineId; desc: Phaser.GameObjects.Text; btn: Phaser.GameObjects.Rectangle; btnText: Phaser.GameObjects.Text; title: Phaser.GameObjects.Text }[] = [];
   private orderClock = 0;
   private saveClock = 0;
   private bestSent = 0;
@@ -75,6 +77,7 @@ class MarketGarden extends Phaser.Scene {
     this.add.rectangle(W / 2, 640, W, 1280, COL.bg);
     this.buildHeader();
     this.buildField();
+    this.buildMachines();
     this.buildCropBar();
     this.buildMarket();
     this.buildUpgradeButton();
@@ -85,7 +88,7 @@ class MarketGarden extends Phaser.Scene {
 
     this.refreshAll();
     if (offline > 0) this.toast(`Welcome back! Your farmhand earned ${L.formatNum(offline)} coins`);
-    else if (this.s.lifetime === 0) this.toast("Tap a plot to plant wheat");
+    else if (this.s.lifetime === 0) this.toast("Tap a plot to plant wheat. Drag across plots to farm faster!");
 
     gameReady();
   }
@@ -122,6 +125,21 @@ class MarketGarden extends Phaser.Scene {
       sbg.on("pointerdown", () => this.buy("plot"));
       this.emptySlots.push(slot);
     }
+  }
+
+  private buildMachines() {
+    const y = 748, slotW = 136, x0 = (W - 5 * slotW) / 2;
+    this.add.rectangle(W / 2, y, W, 160, 0x5b8f3a);
+    L.MACHINES.forEach((m, i) => {
+      const x = x0 + i * slotW + slotW / 2;
+      const hit = this.add.rectangle(x, y, slotW - 8, 150, 0x000000, 0).setInteractive({ useHandCursor: true });
+      hit.on("pointerdown", () => this.showUpgrades(true));
+      const icon = this.add.image(x, y - 16, `m-${m.id}`).setScale(0.9);
+      let extra: Phaser.GameObjects.Image | undefined;
+      if (m.id === "windmill") extra = this.add.image(x, y - 16 - 24, "m-blades").setScale(0.75);
+      const label = text(this, x, y + 60, "", 19).setOrigin(0.5);
+      this.machineViews.push({ id: m.id, icon, extra, label, owned: false });
+    });
   }
 
   private buildCropBar() {
@@ -188,11 +206,11 @@ class MarketGarden extends Phaser.Scene {
     const p = this.add.container(0, 0).setDepth(10).setVisible(false);
     const shade = this.add.rectangle(W / 2, 640, W, 1280, 0x000000, 0.6).setInteractive();
     shade.on("pointerdown", () => this.showUpgrades(false));
-    const box = this.add.rectangle(W / 2, 640, W - 40, 760, COL.panel).setStrokeStyle(4, 0xf5c542).setInteractive();
-    const title = text(this, W / 2, 310, "Upgrades", 40, COL.gold).setOrigin(0.5);
+    const box = this.add.rectangle(W / 2, 640, W - 40, 1180, COL.panel).setStrokeStyle(4, 0xf5c542).setInteractive();
+    const title = text(this, W / 2, 104, "Upgrades", 40, COL.gold).setOrigin(0.5);
     p.add([shade, box, title]);
     L.UPGRADES.forEach((u, i) => {
-      const y = 420 + i * 140;
+      const y = 196 + i * 108;
       const t = text(this, 50, y - 30, u.name, 30);
       const desc = text(this, 50, y + 12, "", 22, COL.muted, false);
       const btn = this.add.rectangle(W - 130, y, 180, 80, COL.good).setInteractive({ useHandCursor: true });
@@ -201,8 +219,28 @@ class MarketGarden extends Phaser.Scene {
       p.add([t, desc, btn, btnText]);
       this.upgradeRows.push({ id: u.id, desc, btn, btnText, title: t });
     });
-    const close = this.add.rectangle(W / 2, 960, 260, 72, COL.panelLight).setInteractive({ useHandCursor: true });
-    const closeT = text(this, W / 2, 960, "Close", 28).setOrigin(0.5);
+    const mTitle = text(this, W / 2, 520, "Machines", 34, COL.gold).setOrigin(0.5);
+    p.add(mTitle);
+    L.MACHINES.forEach((m, i) => {
+      const y = 596 + i * 104;
+      const icon = this.add.image(78, y, `m-${m.id}`).setScale(0.6);
+      if (m.id === "windmill") p.add(this.add.image(78, y - 14, "m-blades").setScale(0.5));
+      const t = text(this, 130, y - 32, m.name, 28);
+      const desc = text(this, 130, y + 2, m.desc, 19, COL.muted, false).setWordWrapWidth(380);
+      const btn = this.add.rectangle(W - 120, y, 150, 76, COL.good).setInteractive({ useHandCursor: true });
+      const btnText = text(this, W - 120, y, "", 26).setOrigin(0.5);
+      btn.on("pointerdown", () => {
+        if (L.buyMachine(this.s, m.id)) {
+          this.toast(`${m.name} built!`);
+          this.refreshAll();
+          this.persist();
+        }
+      });
+      p.add([icon, t, desc, btn, btnText]);
+      this.machineRows.push({ id: m.id, desc, btn, btnText, title: t });
+    });
+    const close = this.add.rectangle(W / 2, 1160, 260, 72, COL.panelLight).setInteractive({ useHandCursor: true });
+    const closeT = text(this, W / 2, 1160, "Close", 28).setOrigin(0.5);
     close.on("pointerdown", () => this.showUpgrades(false));
     p.add([close, closeT]);
     this.upgradePanel = p;
@@ -309,9 +347,31 @@ class MarketGarden extends Phaser.Scene {
         const lvl = s.levels[r.id];
         const cost = L.upgradeCost(s, r.id);
         r.title.setText(`${def.name}  ·  Lv ${lvl}`);
-        r.desc.setText(def.describe(r.id === "helper" && lvl === 0 ? 0 : lvl));
+        r.desc.setText(def.describe(lvl));
         r.btnText.setText(cost === null ? "Max" : L.formatNum(cost));
         r.btn.setFillStyle(cost !== null && s.coins >= cost ? COL.good : COL.disabled);
+      });
+    }
+
+    this.machineViews.forEach((v, i) => {
+      const owned = L.has(s, v.id);
+      const def = L.MACHINES[i];
+      const next = !owned && (i === 0 || L.has(s, L.MACHINES[i - 1].id));
+      v.icon.setAlpha(owned ? 1 : next ? 0.45 : 0.15);
+      v.extra?.setAlpha(owned ? 1 : next ? 0.45 : 0.15);
+      v.label.setText(owned ? def.name : next ? `${L.formatNum(def.cost)}` : "?");
+      v.label.setColor(owned ? COL.text : next && s.coins >= def.cost ? COL.gold : "#e8f5e9");
+      if (owned && !v.owned) this.animateMachine(v);
+      v.owned = owned;
+    });
+
+    if (this.upgradePanel.visible) {
+      this.machineRows.forEach((r, i) => {
+        const def = L.MACHINES[i];
+        const owned = L.has(s, r.id);
+        const unlockable = i === 0 || L.has(s, L.MACHINES[i - 1].id);
+        r.btnText.setText(owned ? "Built" : unlockable ? L.formatNum(def.cost) : "Locked");
+        r.btn.setFillStyle(!owned && unlockable && s.coins >= def.cost ? COL.good : COL.disabled);
       });
     }
 
@@ -344,11 +404,11 @@ class MarketGarden extends Phaser.Scene {
       }
     });
 
-    const helperEvery = L.helperInterval(s.levels.helper) * 1000;
-    this.helperClock += dt;
-    if (this.helperClock >= helperEvery) {
-      this.helperClock = 0;
-      if (L.helperTick(s, now) > 0) this.refreshAll();
+    const every = L.machineInterval(s) * 1000;
+    this.machineClock += dt;
+    if (this.machineClock >= every) {
+      this.machineClock = 0;
+      if (L.machineTick(s, now) > 0) this.refreshAll();
     }
 
     // A new customer arrives a few seconds after the last one leaves.
@@ -375,6 +435,16 @@ class MarketGarden extends Phaser.Scene {
   }
 
   // ---------- small effects ----------
+
+  private animateMachine(v: { id: L.MachineId; icon: Phaser.GameObjects.Image; extra?: Phaser.GameObjects.Image }) {
+    if (v.id === "windmill" && v.extra) {
+      this.tweens.add({ targets: v.extra, angle: 360, duration: 3000, repeat: -1 });
+    } else if (v.id === "tractor" || v.id === "harvester") {
+      this.tweens.add({ targets: v.icon, x: v.icon.x + 6, y: v.icon.y - 3, duration: 260, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    } else if (v.id === "dam" || v.id === "well") {
+      this.tweens.add({ targets: v.icon, scale: 0.95, duration: 900, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    }
+  }
 
   private floatText(x: number, y: number, str: string) {
     const t = text(this, x, y, str, 40, COL.gold).setOrigin(0.5).setStroke("#3e2a1f", 6).setDepth(5);
