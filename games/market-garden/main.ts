@@ -6,7 +6,10 @@ import { setupDecor } from "./decor";
 
 type Kind = M.ItemKind;
 const GAME_ID = "market-garden";
-const PRICE: Record<Kind, number> = { wheat: 2, flour: 5, bread: 12 };
+const PRICE: Record<Kind, number> = { seed: 0, wheat: 3, flour: 6, bread: 13 };
+const SEED_COST = 1;
+// Every store has a limit. Nothing piles up forever.
+const CAP = { shelf: 12, machineIn: 10, machineOut: 10 };
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 // ------------------------------------------------------------------
@@ -162,7 +165,22 @@ interface Item { kind: Kind; obj: THREE.Object3D; landed: boolean }
 /** Items laid out in a grid that grows upward. Used for the farmer's back, vehicles, machines and the stall. */
 class Pile {
   items: Item[] = [];
+  cap = Infinity;
+  label?: M.Label;
   constructor(public group: THREE.Object3D, public cols = 2, public rows = 2, public sx = 0.7, public sz = 0.55, public layerH = 0.27) {}
+  get full() { return this.items.length >= this.cap; }
+  get space() { return Math.max(0, this.cap - this.items.length); }
+  /** Show a small "n/cap" sign above this store. */
+  withLabel(y: number, cap: number) {
+    this.cap = cap;
+    this.label = new M.Label(150, 64, 1.0);
+    this.label.sprite.position.set(0, y, 0);
+    this.group.add(this.label.sprite);
+    return this;
+  }
+  updateLabel() {
+    this.label?.set(this.full ? "FULL" : `${this.count}/${this.cap}`, "", this.full ? "rgba(198,40,40,0.9)" : "rgba(40,28,20,0.8)");
+  }
   local(i: number) {
     const per = this.cols * this.rows;
     const c = i % this.cols, r = Math.floor(i / this.cols) % this.rows, l = Math.floor(i / per);
@@ -357,6 +375,7 @@ scene.add(farmer.root);
 farmer.root.position.set(0, 0, 4);
 const bag = new Pile(farmer.back, 1, 1, 0, 0, 0.27);
 let capacity = 10;
+bag.cap = capacity;
 
 // ------------------------------------------------------------------
 // State shared by many systems
@@ -414,9 +433,10 @@ const sfx = new Sfx();
 // ------------------------------------------------------------------
 // Fields
 // ------------------------------------------------------------------
+/** growth: -1 = bare soil (needs seed), 0..1 = growing, 1 = ripe. */
 interface Tile { pos: THREE.Vector3; plant: THREE.Group; growth: number; field: number }
 const tiles: Tile[] = [];
-function makeField(field: number, cx: number, cz: number, animate: boolean) {
+function makeField(field: number, cx: number, cz: number, animate: boolean, startGrowth = 1) {
   const cols = 4, rows = 5, s = 1.4;
   for (let c = 0; c < cols; c++) {
     for (let r = 0; r < rows; r++) {
@@ -428,7 +448,7 @@ function makeField(field: number, cx: number, cz: number, animate: boolean) {
       plant.position.set(x, 0.12, z);
       plant.rotation.y = Math.random() * Math.PI;
       scene.add(plant);
-      tiles.push({ pos: V(x, 0, z), plant, growth: 1, field });
+      tiles.push({ pos: V(x, 0, z), plant, growth: startGrowth, field });
       if (animate) {
         popIn(soil, (c + r) * 0.04);
         popIn(plant, (c + r) * 0.04 + 0.1);
@@ -455,7 +475,7 @@ const shelfGroup = new THREE.Group();
 shelfGroup.position.set(-6.4, 0.97, 4.4);
 shelfGroup.rotation.y = -Math.PI / 2;
 scene.add(shelfGroup);
-const shelf = new Pile(shelfGroup, 5, 2, 0.6, 0.5, 0.26);
+const shelf = new Pile(shelfGroup, 5, 2, 0.6, 0.5, 0.26).withLabel(1.9, CAP.shelf);
 const sellZone = { pos: V(-4.4, 0, 4.4), r: 1.2 };
 new Decal(1.8, 2.6, sellZone.pos.x, sellZone.pos.z).zone("SELL", "#ffd54f");
 const cashGroup = new THREE.Group();
@@ -463,6 +483,15 @@ cashGroup.position.set(-4.4, 0, 7.0);
 scene.add(cashGroup);
 const cash = new Cash(cashGroup);
 const cashZone = { pos: V(-4.4, 0, 7.0), r: 1.25 };
+
+// Seed crate: stand here to buy seed bags for planting.
+const crate = M.seedCrate();
+crate.position.set(4.6, 0, 3.6);
+crate.rotation.y = 0.15;
+scene.add(crate);
+solid(4.6, 3.6, 1.4, 1.0);
+const seedZone = { pos: V(3.0, 0, 3.0), r: 1.1 };
+new Decal(1.9, 1.6, seedZone.pos.x, seedZone.pos.z).zone(`SEEDS $${SEED_COST}`, "#a1887f");
 
 interface Machine {
   input: Pile; output: Pile; inZone: THREE.Vector3; outZone: THREE.Vector3; center: THREE.Vector3;
@@ -472,16 +501,19 @@ function makeMachine(x: number, z: number, from: Kind, to: Kind, secs: number): 
   const ig = new THREE.Group(); ig.position.set(x + 1.8, 0.1, z + 2.3); scene.add(ig);
   const og = new THREE.Group(); og.position.set(x - 1.8, 0.1, z + 2.3); scene.add(og);
   return {
-    input: new Pile(ig, 2, 2), output: new Pile(og, 2, 2), center: V(x, 2, z),
+    input: new Pile(ig, 2, 2).withLabel(1.9, CAP.machineIn), output: new Pile(og, 2, 2).withLabel(1.9, CAP.machineOut), center: V(x, 2, z),
     inZone: V(x + 1.8, 0, z + 2.3), outZone: V(x - 1.8, 0, z + 2.3),
     from, to, secs, timer: 0, on: false, anim: () => {},
   };
 }
 const mill = makeMachine(-4, -4.6, "wheat", "flour", 1.0);
 const bakeryM = makeMachine(-4, -11.6, "flour", "bread", 1.3);
+for (const m of [mill, bakeryM]) for (const p of [m.input, m.output]) p.label!.sprite.visible = false;
 
 function enableMachine(m: Machine, label: [string, string]) {
   m.on = true;
+  m.input.label!.sprite.visible = true;
+  m.output.label!.sprite.visible = true;
   new Decal(1.9, 1.9, m.inZone.x, m.inZone.z).zone(label[0], "#8bc34a");
   new Decal(1.9, 1.9, m.outZone.x, m.outZone.z).zone(label[1], "#4fc3f7");
 }
@@ -506,42 +538,71 @@ function moveTo(obj: THREE.Object3D, target: THREE.Vector3, speed: number, dt: n
   return dist - step < 0.15;
 }
 function harvestInto(t: Tile, load: Pile) {
-  t.growth = 0;
+  t.growth = -1;
   load.add("wheat", t.pos.clone().setY(0.6));
+  decor.burst(t.pos.clone().setY(0.5), 0xf0c94a, 4);
   sfx.pop();
 }
+function plantTile(t: Tile) {
+  t.growth = 0;
+  decor.burst(t.pos.clone().setY(0.3), 0x8d6e4a, 4);
+}
+/** Unload one item at a time. Waits (returns false) while the target is full. */
 function unloadTick(v: Vehicle, dt: number, target: Pile): boolean {
+  if (v.load.count === 0) return true;
+  if (target.full) return false;
   v.timer -= dt;
-  if (v.timer > 0) return v.load.count === 0;
+  if (v.timer > 0) return false;
   v.timer = 0.07;
   const it = v.load.take();
   if (it) target.add(it.kind, it.at);
   return v.load.count === 0;
 }
 const vSpeed = (v: Vehicle) => v.speed * (built.has("dam") ? 1.3 : 1);
-function fieldWorker(field: number) {
-  return (v: Vehicle, dt: number) => {
-    if (v.state === "gather") {
-      if (v.load.count >= v.cap) { v.state = "deliver"; return; }
-      let best: Tile | null = null, bd = Infinity;
-      for (const t of tiles) {
-        if (t.field !== field || t.growth < 1) continue;
-        const d = t.pos.distanceToSquared(v.obj.position);
-        if (d < bd) { bd = d; best = t; }
-      }
-      if (!best) { v.state = v.load.count > 0 ? "deliver" : "home"; return; }
-      if (moveTo(v.obj, best.pos, vSpeed(v), dt)) harvestInto(best, v.load);
-      for (const t of tiles) {
-        if (t.field === field && t.growth >= 1 && v.load.count < v.cap && t.pos.distanceTo(v.obj.position) < 0.8) harvestInto(t, v.load);
-      }
-    } else if (v.state === "deliver") {
-      const target = mill.on ? mill.inZone : sellZone.pos;
-      if (moveTo(v.obj, target, vSpeed(v), dt) && unloadTick(v, dt, mill.on ? mill.input : shelf)) v.state = "gather";
-    } else {
-      if (tiles.some((t) => t.field === field && t.growth >= 1)) v.state = "gather";
-      else moveTo(v.obj, v.home, vSpeed(v), dt);
+function nearestTile(from: THREE.Vector3, pred: (t: Tile) => boolean): Tile | null {
+  let best: Tile | null = null, bd = Infinity;
+  for (const t of tiles) {
+    if (!pred(t)) continue;
+    const d = t.pos.distanceToSquared(from);
+    if (d < bd) { bd = d; best = t; }
+  }
+  return best;
+}
+let seedSpend = 0;
+/** Tractor: plants bare soil in every field, paying for each seed bag. */
+function tractorWorker(v: Vehicle, dt: number) {
+  const target = coins >= SEED_COST ? nearestTile(v.obj.position, (t) => t.growth < 0) : null;
+  if (!target) { moveTo(v.obj, v.home, vSpeed(v), dt); return; }
+  if (moveTo(v.obj, target.pos, vSpeed(v), dt)) {
+    coins -= SEED_COST;
+    seedSpend += SEED_COST;
+    plantTile(target);
+  }
+  for (const t of tiles) {
+    if (t.growth < 0 && coins >= SEED_COST && t.pos.distanceTo(v.obj.position) < 0.7) {
+      coins -= SEED_COST;
+      seedSpend += SEED_COST;
+      plantTile(t);
     }
-  };
+  }
+}
+/** Harvester: cuts ripe wheat, takes it to the windmill (or the stall), waits if storage is full. */
+function harvesterWorker(v: Vehicle, dt: number) {
+  const dest = mill.on ? { pos: mill.inZone, pile: mill.input } : { pos: sellZone.pos, pile: shelf };
+  if (v.state === "gather") {
+    const best = v.load.count < v.cap ? nearestTile(v.obj.position, (t) => t.growth >= 1) : null;
+    if (!best) { v.state = v.load.count > 0 ? "deliver" : "home"; return; }
+    if (moveTo(v.obj, best.pos, vSpeed(v), dt)) harvestInto(best, v.load);
+    for (const t of tiles) if (t.growth >= 1 && v.load.count < v.cap && t.pos.distanceTo(v.obj.position) < 0.8) harvestInto(t, v.load);
+  } else if (v.state === "deliver") {
+    if (moveTo(v.obj, dest.pos, vSpeed(v), dt) && unloadTick(v, dt, dest.pile)) v.state = "home";
+  } else {
+    // Only go out when there's ripe wheat and somewhere to put it.
+    const ripe = tiles.filter((t) => t.growth >= 1).length;
+    if (v.load.count > 0) v.state = "deliver";
+    else if (ripe >= 4 && dest.pile.space >= 4) v.state = "gather";
+    else moveTo(v.obj, v.home, vSpeed(v), dt);
+  }
 }
 function vanWorker(v: Vehicle, dt: number) {
   if (v.state === "fetch") {
@@ -549,7 +610,7 @@ function vanWorker(v: Vehicle, dt: number) {
       v.timer -= dt;
       if (v.timer <= 0) {
         v.timer = 0.07;
-        const it = bakeryM.output.take();
+        const it = v.load.count < v.cap ? bakeryM.output.take() : null;
         if (it) v.load.add(it.kind, it.at);
         if (v.load.count >= v.cap || (!it && v.load.count > 0)) v.state = "deliver";
         else if (!it) v.state = "home";
@@ -558,7 +619,7 @@ function vanWorker(v: Vehicle, dt: number) {
   } else if (v.state === "deliver") {
     if (moveTo(v.obj, sellZone.pos.clone().add(V(1.4, 0, -0.6)), vSpeed(v), dt) && unloadTick(v, dt, shelf)) v.state = "home";
   } else {
-    if (bakeryM.output.count >= 4) v.state = "fetch";
+    if (bakeryM.output.count >= 4 && shelf.space >= 4) v.state = "fetch";
     else moveTo(v.obj, v.home, vSpeed(v), dt);
   }
 }
@@ -585,7 +646,7 @@ function garage(x: number, z: number) {
 // ------------------------------------------------------------------
 interface PadDef { id: string; name: string; cost: number; x: number; z: number; build: (animate: boolean) => void }
 const PADS: PadDef[] = [
-  { id: "field2", name: "New field", cost: 30, x: 4, z: -9.6, build: (a) => makeField(2, 4, -9.6, a) },
+  { id: "field2", name: "New field", cost: 30, x: 4, z: -9.6, build: (a) => makeField(2, 4, -9.6, a, -1) },
   {
     id: "windmill", name: "Windmill", cost: 80, x: -4, z: -4.6, build: (a) => {
       const w = M.windmill();
@@ -597,7 +658,7 @@ const PADS: PadDef[] = [
       mill.anim = (dt, working) => { w.blades.rotation.z -= dt * (working ? 4 : 0.6); };
     },
   },
-  { id: "basket", name: "Big basket", cost: 120, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 20); } },
+  { id: "basket", name: "Big basket", cost: 120, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 20); bag.cap = capacity; } },
   {
     id: "well", name: "Water well", cost: 160, x: 0.4, z: -5.8, build: (a) => {
       const w = M.well();
@@ -625,16 +686,16 @@ const PADS: PadDef[] = [
     },
   },
   {
-    id: "tractor", name: "Tractor", cost: 700, x: 8.6, z: -2, build: () => {
+    id: "tractor", name: "Tractor (plants)", cost: 700, x: 8.6, z: -2, build: () => {
       garage(8.6, -2);
-      addVehicle(M.tractor(), V(8.6, 0, -2), 8, 3.2, fieldWorker(1));
+      addVehicle(M.tractor(), V(8.6, 0, -2), 8, 3.2, tractorWorker);
     },
   },
-  { id: "basket2", name: "Huge basket", cost: 900, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 35); } },
+  { id: "basket2", name: "Huge basket", cost: 900, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 35); bag.cap = capacity; } },
   {
     id: "harvester", name: "Harvester", cost: 1500, x: 8.6, z: -9.6, build: () => {
       garage(8.6, -9.6);
-      addVehicle(M.harvester(), V(8.6, 0, -9.6), 14, 3.0, fieldWorker(2));
+      addVehicle(M.harvester(), V(8.6, 0, -9.6), 12, 3.0, harvesterWorker);
     },
   },
   {
@@ -710,7 +771,7 @@ interface Customer {
 }
 const customers: Customer[] = [];
 const SHIRTS = [0xe57373, 0x64b5f6, 0x81c784, 0xffb74d, 0xba68c8, 0x4db6ac, 0xf06292, 0xfff176];
-let spawnTimer = 1, lostSales = 0;
+let spawnTimer = 0.3, lostSales = 0;
 const queueSlot = (i: number) => (i === 0 ? V(-7.9, 0, 4.4) : V(-8.4, 0, 4.4 + i * 1.2));
 
 function walkAnim(obj: THREE.Object3D, moving: boolean) {
@@ -769,7 +830,7 @@ function updateCustomers(dt: number) {
       walkAnim(c.obj, true);
       continue;
     }
-    const arrived = moveTo(c.obj, queueSlot(queueIdx), 2.8, dt);
+    const arrived = moveTo(c.obj, queueSlot(queueIdx), 3.4, dt);
     walkAnim(c.obj, !arrived);
     c.bubble.set(c.kind, c.got, c.want, c.patience / c.maxPatience, false);
     if (arrived) {
@@ -904,12 +965,18 @@ function updatePlayer(dt: number) {
   // harvest by walking through ripe wheat
   fullWarn -= dt;
   for (const t of tiles) {
-    if (t.growth < 1 || !near(t.pos, 0.95)) continue;
-    if (bag.count >= capacity) {
+    if (!near(t.pos, 0.95)) continue;
+    if (t.growth < 0) {
+      // plant from a seed bag you're carrying
+      if (bag.take((k) => k === "seed")) { plantTile(t); sfx.tick(); }
+      continue;
+    }
+    if (t.growth < 1) continue;
+    if (bag.full) {
       if (fullWarn <= 0) { toast("Basket full! Take it to the stall"); fullWarn = 4; }
       break;
     }
-    t.growth = 0;
+    t.growth = -1;
     bag.add("wheat", t.pos.clone().setY(0.7));
     decor.burst(t.pos.clone().setY(0.5), 0xf0c94a, 5);
     sfx.pop();
@@ -920,16 +987,29 @@ function updatePlayer(dt: number) {
   if (dropTimer <= 0) {
     let did = false;
     if (near(sellZone.pos, sellZone.r) && bag.count > 0) {
-      const it = bag.take();
-      if (it) { shelf.add(it.kind, it.at); did = true; }
+      if (shelf.full) {
+        if (fullWarn <= 0) { toast("Counter is full! Wait for customers"); fullWarn = 4; }
+      } else {
+        const it = bag.take((k) => k !== "seed");
+        if (it) { shelf.add(it.kind, it.at); did = true; }
+      }
+    }
+    if (near(seedZone.pos, seedZone.r) && !bag.full) {
+      // Seeds cost money, but you're never stuck: they're free if you're broke.
+      const free = coins < SEED_COST && tiles.every((t) => t.growth < 0) && bag.countOf("wheat") === 0;
+      if (coins >= SEED_COST || free) {
+        if (!free) { coins -= SEED_COST; seedSpend += SEED_COST; }
+        bag.add("seed", crate.position.clone().setY(1));
+        did = true;
+      }
     }
     for (const m of [mill, bakeryM]) {
       if (!m.on) continue;
-      if (near(m.inZone, 1.1)) {
+      if (near(m.inZone, 1.1) && !m.input.full) {
         const it = bag.take((kk) => kk === m.from);
         if (it) { m.input.add(it.kind, it.at); did = true; }
       }
-      if (near(m.outZone, 1.1) && bag.count < capacity) {
+      if (near(m.outZone, 1.1) && !bag.full) {
         const it = m.output.take();
         if (it) { bag.add(it.kind, it.at); did = true; }
       }
@@ -975,7 +1055,7 @@ function updatePlayer(dt: number) {
 function updateMachines(dt: number) {
   for (const m of [mill, bakeryM]) {
     if (!m.on) continue;
-    const working = m.input.count > 0 && m.output.count < 40;
+    const working = m.input.count > 0 && !m.output.full;
     m.anim(dt, working);
     if (!working) { m.timer = 0; continue; }
     m.timer += dt;
@@ -989,6 +1069,8 @@ function updateMachines(dt: number) {
 function updateFields(dt: number) {
   const rt = regrowTime();
   for (const t of tiles) {
+    t.plant.visible = t.growth >= 0;
+    if (t.growth < 0) continue;
     if (t.growth < 1) t.growth = Math.min(1, t.growth + dt / rt);
     const s = 0.15 + 0.85 * t.growth;
     t.plant.scale.set(s, s, s);
@@ -1007,6 +1089,10 @@ function updateGuide() {
     else msg = "Customers are buying...";
   } else if (cash.value > 0 && lifetime < 20) {
     msg = "Collect your cash"; target = cashZone.pos;
+  } else if (lifetime < 120 && !tiles.some((t) => t.growth >= 0) && bag.countOf("seed") === 0 && bag.countOf("wheat") === 0) {
+    msg = "Buy seeds at the seed crate"; target = seedZone.pos;
+  } else if (lifetime < 120 && bag.countOf("seed") > 0 && tiles.some((t) => t.growth < 0)) {
+    msg = "Walk over bare soil to plant"; target = nearestTile(playerPos(), (t) => t.growth < 0)?.pos ?? null;
   } else if (built.size === 0 && nextPad && coins >= 10) {
     msg = "Stand on the pad to build"; target = V(nextPad.def.x, 0, nextPad.def.z);
   } else if (built.has("windmill") && built.size <= 2 && lifetime < 250 && bag.countOf("wheat") > 0) {
@@ -1031,12 +1117,13 @@ function updateGuide() {
 // ------------------------------------------------------------------
 interface SaveData {
   v: 2; coins: number; lifetime: number; built: string[]; paid: Record<string, number>;
-  bag: Kind[]; shelf: Kind[]; mill: [Kind[], Kind[]]; bakery: [Kind[], Kind[]]; cash: number;
+  bag: Kind[]; shelf: Kind[]; mill: [Kind[], Kind[]]; bakery: [Kind[], Kind[]]; cash: number; tiles?: number[];
 }
 function persist() {
   const d: SaveData = {
     v: 2, coins, lifetime, built: [...built], paid: { ...paidSaved }, bag: bag.kinds(), shelf: shelf.kinds(),
     mill: [mill.input.kinds(), mill.output.kinds()], bakery: [bakeryM.input.kinds(), bakeryM.output.kinds()], cash: cash.value,
+    tiles: tiles.map((t) => Math.round(t.growth * 100) / 100),
   };
   P.save(GAME_ID, JSON.stringify(d));
 }
@@ -1053,12 +1140,15 @@ async function load() {
     lifetime = d.lifetime;
     Object.assign(paidSaved, d.paid ?? {});
     for (const p of PADS) if (d.built.includes(p.id)) { built.add(p.id); p.build(false); }
-    d.bag.forEach((k) => bag.add(k));
-    d.shelf.forEach((k) => shelf.add(k));
-    d.mill[0].forEach((k) => mill.input.add(k));
-    d.mill[1].forEach((k) => mill.output.add(k));
-    d.bakery[0].forEach((k) => bakeryM.input.add(k));
-    d.bakery[1].forEach((k) => bakeryM.output.add(k));
+    // Older saves may hold more than today's limits allow: trim to the caps.
+    const fill = (src: Kind[], pile: Pile) => src.slice(0, pile.cap).forEach((k) => pile.add(k));
+    fill(d.bag, bag);
+    fill(d.shelf, shelf);
+    fill(d.mill[0], mill.input);
+    fill(d.mill[1], mill.output);
+    fill(d.bakery[0], bakeryM.input);
+    fill(d.bakery[1], bakeryM.output);
+    d.tiles?.forEach((g, i) => { if (tiles[i]) tiles[i].growth = g; });
     if (d.cash > 0) cash.add(d.cash);
   }
   // Restored things appear instantly, without the pop-in.
@@ -1089,6 +1179,7 @@ function frame(now: number) {
   }
   spinners.forEach((f) => f(dt));
   decor.update(dt, clock, farmer.root.position, playerMoving);
+  for (const p of [shelf, mill.input, mill.output, bakeryM.input, bakeryM.output]) p.updateLabel();
   updateFlyers(dt);
   updatePops(dt);
   updateBits(dt);

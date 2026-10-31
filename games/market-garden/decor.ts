@@ -9,6 +9,7 @@ const rand = (a: number, b: number) => a + Math.random() * (b - a);
 /** Areas kept clear of grass, flowers and rocks (fields, paths, buildings). */
 const CLEAR: [number, number, number, number][] = [
   [1, 7, -13, 1.6], // fields
+  [1.5, 6, 2, 4.6], // seed crate
   [-1.8, 0.6, -15, 10], // main path
   [-11, 11, 7, 9.4], // road
   [-9.6, -2.6, 2.4, 8], // stall area

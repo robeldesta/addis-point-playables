@@ -45,12 +45,18 @@ export const COLORS = {
   skin: 0xe0ac7e,
 };
 
-export type ItemKind = "wheat" | "flour" | "bread";
+export type ItemKind = "seed" | "wheat" | "flour" | "bread";
 
 /** One carried item (sized to stack neatly). */
 export function itemMesh(kind: ItemKind): THREE.Object3D {
   const g = new THREE.Group();
-  if (kind === "wheat") {
+  if (kind === "seed") {
+    const sack = mesh(sphere(0.24, 7), 0xb08a5a, 0, 0.14, 0);
+    sack.scale.set(1.15, 0.6, 0.9);
+    g.add(sack);
+    g.add(mesh(cyl(0.06, 0.09, 0.1, 6), 0x8a6a40, 0, 0.3, 0, false));
+    g.add(mesh(box(0.2, 0.05, 0.02), 0x5a8a2a, 0, 0.16, 0.21, false));
+  } else if (kind === "wheat") {
     g.add(mesh(box(0.62, 0.22, 0.42), COLORS.wheat, 0, 0.11, 0));
     g.add(mesh(box(0.12, 0.24, 0.46), 0xc9932a, 0, 0.11, 0));
   } else if (kind === "flour") {
@@ -461,4 +467,16 @@ export function addArms(body: THREE.Object3D, color: number, y: number, x: numbe
     return pivot;
   };
   return [make(-1), make(1)];
+}
+
+export function seedCrate(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(mesh(box(1.3, 0.7, 0.9), 0x9c6b3e, 0, 0.35, 0));
+  for (const y of [0.15, 0.55]) g.add(mesh(box(1.34, 0.08, 0.94), 0x6e4524, 0, y, 0, false));
+  for (let i = 0; i < 4; i++) {
+    const s = mesh(sphere(0.24, 7), 0xb08a5a, -0.4 + (i % 2) * 0.5 + (i > 1 ? 0.25 : 0), 0.8 + (i > 1 ? 0.18 : 0), (i % 2) * 0.15 - 0.05);
+    s.scale.set(1.1, 0.65, 0.9);
+    g.add(s);
+  }
+  return g;
 }
