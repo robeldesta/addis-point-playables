@@ -2,17 +2,49 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>Market Garden</title>
     <!-- Official YouTube Playables SDK. Must load before the game. -->
     <script src="https://www.youtube.com/game_api/v1"></script>
     <style>
-      html, body { margin: 0; height: 100%; background: #6fa84a; overflow: hidden; }
-      #game { width: 100%; height: 100%; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #9fd8f5; touch-action: none;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; font-family: Arial, Helvetica, sans-serif; }
+      #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px; display: flex;
+        justify-content: space-between; pointer-events: none; z-index: 2; }
+      .pill { display: flex; align-items: center; gap: 8px; background: rgba(40, 28, 20, 0.78); color: #fff;
+        font-weight: 800; font-size: 22px; padding: 6px 16px 6px 8px; border-radius: 999px; box-shadow: 0 3px 0 rgba(0,0,0,.25); }
+      .pill .icon { width: 28px; height: 28px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff3b0, #f7c531 45%, #c9940f);
+        box-shadow: inset 0 0 0 3px #d9a514; }
+      .pill .basket { width: 28px; height: 22px; border-radius: 4px 4px 10px 10px; background: repeating-linear-gradient(90deg, #c98a3c 0 5px, #a86a28 5px 8px); }
+      .pill.full { background: rgba(198, 40, 40, 0.9); }
+      .bump { animation: bump .25s ease-out; }
+      @keyframes bump { 40% { transform: scale(1.15); } }
+      #hint { position: fixed; left: 50%; top: calc(max(12px, env(safe-area-inset-top)) + 58px); transform: translateX(-50%) translateY(-8px);
+        background: #fff; color: #3e2a1f; font-weight: 800; font-size: 18px; padding: 10px 18px; border-radius: 14px;
+        box-shadow: 0 4px 0 rgba(0,0,0,.18); opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none;
+        white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; z-index: 2; }
+      #hint.show { opacity: 1; transform: translateX(-50%); }
+      #toast { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%) scale(.9); background: rgba(40,28,20,.88);
+        color: #ffe9a8; font-weight: 800; font-size: 22px; padding: 12px 22px; border-radius: 16px; opacity: 0;
+        transition: opacity .2s, transform .2s; pointer-events: none; text-align: center; max-width: calc(100vw - 32px); z-index: 2; }
+      #toast.show { opacity: 1; transform: translateX(-50%) scale(1); }
+      #joy { position: fixed; width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%;
+        background: rgba(255,255,255,.18); border: 3px solid rgba(255,255,255,.55); display: none; pointer-events: none; z-index: 3; }
+      #joy.on { display: block; }
+      #knob { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; border-radius: 50%;
+        background: rgba(255,255,255,.9); transform: translate(-50%, -50%); box-shadow: 0 2px 6px rgba(0,0,0,.25); }
     </style>
   </head>
   <body>
     <div id="game"></div>
+    <div class="hud">
+      <div class="pill"><span class="icon"></span><span id="coins">0</span></div>
+      <div class="pill"><span class="basket"></span><span id="bag">0/10</span></div>
+    </div>
+    <div id="hint"></div>
+    <div id="toast"></div>
+    <div id="joy"><div id="knob"></div></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 # Addis Point Playables
 
-Small web games built for YouTube Playables, using Phaser 4 + Vite + TypeScript.
+Small web games built for YouTube Playables, using Vite + TypeScript. Market Garden uses Three.js (3D); the hello test uses Phaser 4.
 
 ## Run locally
 

@@ -1,470 +1,1048 @@
-import Phaser from "phaser";
-import { bootGame } from "../../src/platform/boot";
-import { gameReady, loadSave, save, sendScore, onPause } from "../../src/platform/platform";
-import { makeArt } from "./art";
-import * as L from "./logic";
+import * as THREE from "three";
+import * as P from "../../src/platform/platform";
+import * as M from "./models";
+import { Sfx } from "./sfx";
 
+type Kind = M.ItemKind;
 const GAME_ID = "market-garden";
-const W = 720;
-const FONT = "Arial, Helvetica, sans-serif";
+const PRICE: Record<Kind, number> = { wheat: 2, flour: 5, bread: 12 };
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
-const COL = {
-  bg: 0x6fa84a,
-  panel: 0x3e2a1f,
-  panelLight: 0x5a3d2b,
-  soil: 0x7a4e2d,
-  soilDark: 0x5d3a20,
-  gold: "#f5c542",
-  text: "#fff8ec",
-  muted: "#d7c8b0",
-  good: 0x43a047,
-  disabled: 0x6d5a4c,
-};
+// ------------------------------------------------------------------
+// Renderer, camera, lights
+// ------------------------------------------------------------------
+P.initPlatform();
+const host = document.getElementById("game")!;
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+host.appendChild(renderer.domElement);
 
-const text = (s: Phaser.Scene, x: number, y: number, str: string, size: number, color = COL.text, bold = true) =>
-  s.add.text(x, y, str, { fontFamily: FONT, fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fd8f5);
+scene.fog = new THREE.Fog(0x9fd8f5, 30, 60);
 
-// Field layout: 3 columns, up to 4 rows.
-const PLOT_W = 196, PLOT_H = 118, GAP = 12, FIELD_X = (W - (3 * PLOT_W + 2 * GAP)) / 2, FIELD_Y = 150;
-const plotPos = (i: number) => ({
-  x: FIELD_X + (i % 3) * (PLOT_W + GAP) + PLOT_W / 2,
-  y: FIELD_Y + Math.floor(i / 3) * (PLOT_H + GAP) + PLOT_H / 2,
-});
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
+let camOffset = V(0, 15, 10.5);
 
-interface PlotView {
-  bg: Phaser.GameObjects.Rectangle;
-  sprite: Phaser.GameObjects.Image;
-  bar: Phaser.GameObjects.Rectangle;
-  barBg: Phaser.GameObjects.Rectangle;
-  lastStage: string;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x5d7a3a, 1.7));
+const sun = new THREE.DirectionalLight(0xfff2d6, 2.2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, near: 1, far: 60 });
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  if (!w || !h) return; // Playables may load us in a zero-size view
+  renderer.setSize(w, h);
+  const aspect = w / h;
+  camera.aspect = aspect;
+  // Portrait phones need a wider view; wide screens a closer one.
+  camera.fov = aspect < 0.75 ? 50 : 40;
+  camOffset = aspect < 0.75 ? V(0, 16, 14.5) : V(0, 13, 12);
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ------------------------------------------------------------------
+// Scenery
+// ------------------------------------------------------------------
+const ground = M.mesh(new THREE.PlaneGeometry(140, 140), M.COLORS.grass, 0, 0, 0, false);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+function flat(w: number, d: number, color: number, x: number, z: number, y = 0.01) {
+  const m = M.mesh(new THREE.PlaneGeometry(w, d), color, x, y, z, false);
+  m.rotation.x = -Math.PI / 2;
+  scene.add(m);
+  return m;
+}
+flat(2.2, 24, M.COLORS.path, -0.6, -2);
+flat(22, 2.0, M.COLORS.path, 0, 8.2);
+flat(5, 1.6, M.COLORS.path, -3.2, -6.8);
+flat(1.8, 9, M.COLORS.path, -8.2, 4.2);
+flat(140, 3.2, M.COLORS.water, 0, -19.5, 0.02);
+flat(140, 0.5, 0x3f9fd4, 0, -18, 0.03);
+
+for (let i = 0; i < 46; i++) {
+  const t = M.tree();
+  const side = i % 2 ? 1 : -1;
+  t.position.set(side * (12.5 + Math.random() * 10), 0, -24 + Math.random() * 40);
+  scene.add(t);
+}
+for (let i = 0; i < 10; i++) {
+  const t = M.tree();
+  t.position.set(-10 + i * 2.4 + Math.random(), 0, -23 - Math.random() * 3);
+  scene.add(t);
+}
+const f1 = M.fence(10);
+f1.position.set(-11.5, 0, 11.5);
+scene.add(f1);
+const f2 = M.fence(10);
+f2.position.set(1.5, 0, 11.5);
+scene.add(f2);
+
+const fmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "K" : String(Math.floor(n)));
+
+// ------------------------------------------------------------------
+// Ground decals (zone markers and build pads)
+// ------------------------------------------------------------------
+class Decal {
+  mesh: THREE.Mesh;
+  ctx: CanvasRenderingContext2D;
+  tex: THREE.CanvasTexture;
+  constructor(w: number, d: number, x: number, z: number) {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = Math.round((256 * d) / w);
+    this.ctx = c.getContext("2d")!;
+    this.tex = new THREE.CanvasTexture(c);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, depthWrite: false }));
+    this.mesh.rotation.x = -Math.PI / 2;
+    this.mesh.position.set(x, 0.04, z);
+    this.mesh.renderOrder = 1;
+    scene.add(this.mesh);
+  }
+  zone(label: string, color: string) {
+    const { ctx } = this, W = ctx.canvas.width, H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 14;
+    ctx.setLineDash([30, 16]);
+    ctx.beginPath();
+    ctx.roundRect(10, 10, W - 20, H - 20, 36);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.22;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.font = "bold 44px Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, W / 2, H / 2);
+    this.tex.needsUpdate = true;
+  }
+  pad(name: string, remaining: number, progress: number) {
+    const { ctx } = this, W = ctx.canvas.width, H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(30,30,30,0.55)";
+    ctx.beginPath();
+    ctx.roundRect(8, 8, W - 16, H - 16, 30);
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = "rgba(247,197,49,0.85)";
+    ctx.fillRect(0, H * (1 - progress), W, H * progress);
+    ctx.restore();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 10;
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 40px Arial, sans-serif";
+    ctx.fillText(name, W / 2, H * 0.28);
+    ctx.font = "bold 64px Arial, sans-serif";
+    ctx.fillText(`$${fmt(remaining)}`, W / 2, H * 0.64);
+    this.tex.needsUpdate = true;
+  }
+  dispose() {
+    scene.remove(this.mesh);
+    this.tex.dispose();
+  }
 }
 
-class MarketGarden extends Phaser.Scene {
-  private s!: L.State;
-  private plots: PlotView[] = [];
-  private emptySlots: Phaser.GameObjects.Container[] = [];
-  private coinText!: Phaser.GameObjects.Text;
-  private totalText!: Phaser.GameObjects.Text;
-  private cropButtons: { id: string; c: Phaser.GameObjects.Container; bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text; lock: Phaser.GameObjects.Image; icon: Phaser.GameObjects.Image }[] = [];
-  private sellBtn!: { bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text };
-  private invText!: Phaser.GameObjects.Text;
-  private orderGroup!: Phaser.GameObjects.Container;
-  private orderText!: Phaser.GameObjects.Text;
-  private orderIcon!: Phaser.GameObjects.Image;
-  private orderBg!: Phaser.GameObjects.Rectangle;
-  private upgradePanel!: Phaser.GameObjects.Container;
-  private upgradeRows: { id: L.UpgradeId; desc: Phaser.GameObjects.Text; btn: Phaser.GameObjects.Rectangle; btnText: Phaser.GameObjects.Text; title: Phaser.GameObjects.Text }[] = [];
-  private machineClock = 0;
-  private machineViews: { id: L.MachineId; icon: Phaser.GameObjects.Image; extra?: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text; owned: boolean }[] = [];
-  private machineRows: { id: L.MachineId; desc: Phaser.GameObjects.Text; btn: Phaser.GameObjects.Rectangle; btnText: Phaser.GameObjects.Text; title: Phaser.GameObjects.Text }[] = [];
-  private orderClock = 0;
-  private saveClock = 0;
-  private bestSent = 0;
-  private dragging = false;
-
-  constructor() {
-    super("market-garden");
-  }
-
-  async create() {
-    makeArt(this);
-    const now = Date.now();
-    this.s = L.parseState(await loadSave(GAME_ID), now);
-    const offline = L.offlineEarnings(this.s, now);
-    if (offline > 0) L.earn(this.s, offline);
-    this.s.lastSeen = now;
-
-    this.add.rectangle(W / 2, 640, W, 1280, COL.bg);
-    this.buildHeader();
-    this.buildField();
-    this.buildMachines();
-    this.buildCropBar();
-    this.buildMarket();
-    this.buildUpgradeButton();
-    this.buildUpgradePanel();
-
-    this.input.on("pointerup", () => (this.dragging = false));
-    onPause(() => this.persist());
-
-    this.refreshAll();
-    if (offline > 0) this.toast(`Welcome back! Your farmhand earned ${L.formatNum(offline)} coins`);
-    else if (this.s.lifetime === 0) this.toast("Tap a plot to plant wheat. Drag across plots to farm faster!");
-
-    gameReady();
-  }
-
-  // ---------- building the screen ----------
-
-  private buildHeader() {
-    this.add.rectangle(W / 2, 60, W, 120, COL.panel);
-    this.add.image(52, 48, "coin").setScale(1.1);
-    this.coinText = text(this, 86, 26, "", 44, COL.gold);
-    this.totalText = text(this, 86, 78, "", 22, COL.muted, false);
-    text(this, W - 28, 32, "Market Garden", 30).setOrigin(1, 0);
-  }
-
-  private buildField() {
-    for (let i = 0; i < L.MAX_PLOTS; i++) {
-      const { x, y } = plotPos(i);
-      const bg = this.add.rectangle(x, y, PLOT_W, PLOT_H, COL.soil).setStrokeStyle(4, COL.soilDark).setInteractive();
-      const sprite = this.add.image(x, y - 6, "sprout").setVisible(false);
-      const barBg = this.add.rectangle(x, y + PLOT_H / 2 - 16, PLOT_W - 40, 10, 0x000000, 0.35);
-      const bar = this.add.rectangle(x - (PLOT_W - 40) / 2, y + PLOT_H / 2 - 16, 0, 10, 0x9ccc65).setOrigin(0, 0.5);
-      const act = () => this.tapPlot(i);
-      bg.on("pointerdown", () => { this.dragging = true; act(); });
-      bg.on("pointerover", (p: Phaser.Input.Pointer) => { if (this.dragging && p.isDown) act(); });
-      this.plots.push({ bg, sprite, bar, barBg, lastStage: "" });
-
-      // "Buy plot" placeholder for slots you don't own yet.
-      const slot = this.add.container(x, y);
-      const sbg = this.add.rectangle(0, 0, PLOT_W, PLOT_H, 0x000000, 0.12).setStrokeStyle(3, 0xffffff, 0.35).setInteractive({ useHandCursor: true });
-      const plus = text(this, 0, -14, "+", 56, "#ffffffaa").setOrigin(0.5);
-      const cost = text(this, 0, 34, "", 22, "#ffffffcc").setOrigin(0.5);
-      slot.add([sbg, plus, cost]);
-      slot.setData("cost", cost);
-      sbg.on("pointerdown", () => this.buy("plot"));
-      this.emptySlots.push(slot);
+// ------------------------------------------------------------------
+// Flying objects, piles and stacks
+// ------------------------------------------------------------------
+interface Flyer { obj: THREE.Object3D; from: THREE.Vector3; to: () => THREE.Vector3; t: number; dur: number; h: number; done?: () => void }
+const flyers: Flyer[] = [];
+function fly(obj: THREE.Object3D, from: THREE.Vector3, to: () => THREE.Vector3, done?: () => void, dur = 0.28, h = 1.2) {
+  obj.position.copy(from);
+  scene.add(obj);
+  flyers.push({ obj, from: from.clone(), to, t: 0, dur, h, done });
+}
+function updateFlyers(dt: number) {
+  for (let i = flyers.length - 1; i >= 0; i--) {
+    const f = flyers[i];
+    if (f.obj.userData.dead) {
+      scene.remove(f.obj);
+      flyers.splice(i, 1);
+      continue;
+    }
+    f.t = Math.min(1, f.t + dt / f.dur);
+    const e = f.t * f.t * (3 - 2 * f.t);
+    f.obj.position.lerpVectors(f.from, f.to(), e);
+    f.obj.position.y += Math.sin(Math.PI * f.t) * f.h;
+    if (f.t >= 1) {
+      flyers.splice(i, 1);
+      scene.remove(f.obj);
+      f.done?.();
     }
   }
+}
 
-  private buildMachines() {
-    const y = 748, slotW = 136, x0 = (W - 5 * slotW) / 2;
-    this.add.rectangle(W / 2, y, W, 160, 0x5b8f3a);
-    L.MACHINES.forEach((m, i) => {
-      const x = x0 + i * slotW + slotW / 2;
-      const hit = this.add.rectangle(x, y, slotW - 8, 150, 0x000000, 0).setInteractive({ useHandCursor: true });
-      hit.on("pointerdown", () => this.showUpgrades(true));
-      const icon = this.add.image(x, y - 16, `m-${m.id}`).setScale(0.9);
-      let extra: Phaser.GameObjects.Image | undefined;
-      if (m.id === "windmill") extra = this.add.image(x, y - 16 - 24, "m-blades").setScale(0.75);
-      const label = text(this, x, y + 60, "", 19).setOrigin(0.5);
-      this.machineViews.push({ id: m.id, icon, extra, label, owned: false });
+interface Item { kind: Kind; obj: THREE.Object3D; landed: boolean }
+
+/** Items laid out in a grid that grows upward. Used for the farmer's back, vehicles, machines and the stall. */
+class Pile {
+  items: Item[] = [];
+  constructor(public group: THREE.Object3D, public cols = 2, public rows = 2, public sx = 0.7, public sz = 0.55, public layerH = 0.27) {}
+  local(i: number) {
+    const per = this.cols * this.rows;
+    const c = i % this.cols, r = Math.floor(i / this.cols) % this.rows, l = Math.floor(i / per);
+    return V((c - (this.cols - 1) / 2) * this.sx, l * this.layerH, (r - (this.rows - 1) / 2) * this.sz);
+  }
+  world(i: number) {
+    this.group.updateWorldMatrix(true, false);
+    return this.group.localToWorld(this.local(i));
+  }
+  get count() { return this.items.length; }
+  countOf(k: Kind) { return this.items.filter((i) => i.kind === k).length; }
+  add(kind: Kind, from?: THREE.Vector3) {
+    const it: Item = { kind, obj: M.itemMesh(kind), landed: false };
+    this.items.push(it);
+    const land = () => {
+      if (it.obj.userData.dead) return;
+      it.landed = true;
+      this.group.add(it.obj);
+      this.layout();
+    };
+    if (from) fly(it.obj, from, () => this.world(Math.max(0, this.items.indexOf(it))), land);
+    else land();
+  }
+  /** Remove the newest item matching `pred`. Returns its kind and where it was. */
+  take(pred: (k: Kind) => boolean = () => true): { kind: Kind; at: THREE.Vector3 } | null {
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const it = this.items[i];
+      if (!pred(it.kind)) continue;
+      const at = this.world(i);
+      this.items.splice(i, 1);
+      it.obj.userData.dead = true;
+      it.obj.parent?.remove(it.obj);
+      this.layout();
+      return { kind: it.kind, at };
+    }
+    return null;
+  }
+  layout() {
+    this.items.forEach((it, i) => {
+      if (it.landed) it.obj.position.copy(this.local(i));
     });
   }
+  kinds(): Kind[] { return this.items.map((i) => i.kind); }
+}
 
-  private buildCropBar() {
-    const y = 840, bw = 94, gap = 5, x0 = (W - (L.CROPS.length * bw + (L.CROPS.length - 1) * gap)) / 2;
-    this.add.rectangle(W / 2, y + 62, W, 140, COL.panel, 0.9);
-    L.CROPS.forEach((crop, i) => {
-      const x = x0 + i * (bw + gap) + bw / 2;
-      const c = this.add.container(x, y + 62);
-      const bg = this.add.rectangle(0, 0, bw, 124, COL.panelLight).setStrokeStyle(4, 0xffffff, 0).setInteractive({ useHandCursor: true });
-      const icon = this.add.image(0, -18, `ripe-${crop.id}`).setScale(0.62);
-      const lock = this.add.image(0, -20, "lock").setScale(0.8);
-      const label = text(this, 0, 38, "", 18).setOrigin(0.5);
-      c.add([bg, icon, lock, label]);
-      bg.on("pointerdown", () => this.tapCrop(crop.id));
-      this.cropButtons.push({ id: crop.id, c, bg, label, lock, icon });
-    });
+/** Coins waiting at the stall. */
+class Cash {
+  value = 0;
+  coins: THREE.Mesh[] = [];
+  constructor(public group: THREE.Group) {}
+  private slot(i: number) {
+    const col = i % 6;
+    return V((col % 3) * 0.48 - 0.48, Math.floor(i / 6) * 0.075 + 0.04, Math.floor(col / 3) * 0.48 - 0.24);
   }
-
-  private buildMarket() {
-    const y = 1072;
-    this.add.rectangle(W / 2, y, W, 180, COL.panelLight);
-    // Striped awning
-    for (let i = 0; i < 12; i++) this.add.rectangle(30 + i * 60, 992, 60, 22, i % 2 ? 0xfff8ec : 0xc62828);
-
-    this.orderGroup = this.add.container(0, 0);
-    const cust = this.add.image(80, y + 4, "customer").setScale(0.9);
-    this.orderBg = this.add.rectangle(270, y + 4, 250, 120, 0xfff8ec).setStrokeStyle(4, 0xffffff).setInteractive({ useHandCursor: true });
-    this.orderIcon = this.add.image(196, y + 4, "ripe-wheat").setScale(0.6);
-    this.orderText = this.add.text(236, y + 4, "", { fontFamily: FONT, fontSize: "24px", color: "#3e2a1f", fontStyle: "bold" }).setOrigin(0, 0.5);
-    this.orderGroup.add([cust, this.orderBg, this.orderIcon, this.orderText]);
-    this.orderBg.on("pointerdown", () => {
-      const reward = L.fulfilOrder(this.s);
-      if (reward > 0) {
-        this.floatText(270, y - 40, `+${L.formatNum(reward)}`);
-        this.orderClock = 0;
-        this.refreshAll();
-        this.persist();
+  add(v: number, from?: THREE.Vector3) {
+    this.value += v;
+    const want = Math.min(60, Math.ceil(this.value / 3));
+    while (this.coins.length < want) {
+      const c = M.coinMesh();
+      const target = this.slot(this.coins.length);
+      this.coins.push(c);
+      if (from) {
+        fly(c, from, () => this.group.localToWorld(target.clone()), () => { if (!c.userData.dead) { this.group.add(c); c.position.copy(target); } }, 0.35, 1.5);
       } else {
-        this.tweens.add({ targets: this.orderBg, x: "+=8", duration: 50, yoyo: true, repeat: 2 });
-      }
-    });
-
-    const bg = this.add.rectangle(560, y - 14, 260, 86, COL.good).setInteractive({ useHandCursor: true });
-    const label = text(this, 560, y - 14, "", 28).setOrigin(0.5);
-    this.invText = text(this, 560, y + 52, "", 20, COL.muted, false).setOrigin(0.5);
-    bg.on("pointerdown", () => {
-      const v = L.sellAll(this.s);
-      if (v > 0) {
-        this.floatText(560, y - 70, `+${L.formatNum(v)}`);
-        this.refreshAll();
-        this.persist();
-      }
-    });
-    this.sellBtn = { bg, label };
-  }
-
-  private buildUpgradeButton() {
-    const bg = this.add.rectangle(W / 2, 1218, W - 40, 88, 0xf5c542).setInteractive({ useHandCursor: true });
-    text(this, W / 2, 1218, "Upgrades", 34, "#3e2a1f").setOrigin(0.5);
-    bg.on("pointerdown", () => this.showUpgrades(true));
-  }
-
-  private buildUpgradePanel() {
-    const p = this.add.container(0, 0).setDepth(10).setVisible(false);
-    const shade = this.add.rectangle(W / 2, 640, W, 1280, 0x000000, 0.6).setInteractive();
-    shade.on("pointerdown", () => this.showUpgrades(false));
-    const box = this.add.rectangle(W / 2, 640, W - 40, 1180, COL.panel).setStrokeStyle(4, 0xf5c542).setInteractive();
-    const title = text(this, W / 2, 104, "Upgrades", 40, COL.gold).setOrigin(0.5);
-    p.add([shade, box, title]);
-    L.UPGRADES.forEach((u, i) => {
-      const y = 196 + i * 108;
-      const t = text(this, 50, y - 30, u.name, 30);
-      const desc = text(this, 50, y + 12, "", 22, COL.muted, false);
-      const btn = this.add.rectangle(W - 130, y, 180, 80, COL.good).setInteractive({ useHandCursor: true });
-      const btnText = text(this, W - 130, y, "", 26).setOrigin(0.5);
-      btn.on("pointerdown", () => this.buy(u.id));
-      p.add([t, desc, btn, btnText]);
-      this.upgradeRows.push({ id: u.id, desc, btn, btnText, title: t });
-    });
-    const mTitle = text(this, W / 2, 520, "Machines", 34, COL.gold).setOrigin(0.5);
-    p.add(mTitle);
-    L.MACHINES.forEach((m, i) => {
-      const y = 596 + i * 104;
-      const icon = this.add.image(78, y, `m-${m.id}`).setScale(0.6);
-      if (m.id === "windmill") p.add(this.add.image(78, y - 14, "m-blades").setScale(0.5));
-      const t = text(this, 130, y - 32, m.name, 28);
-      const desc = text(this, 130, y + 2, m.desc, 19, COL.muted, false).setWordWrapWidth(380);
-      const btn = this.add.rectangle(W - 120, y, 150, 76, COL.good).setInteractive({ useHandCursor: true });
-      const btnText = text(this, W - 120, y, "", 26).setOrigin(0.5);
-      btn.on("pointerdown", () => {
-        if (L.buyMachine(this.s, m.id)) {
-          this.toast(`${m.name} built!`);
-          this.refreshAll();
-          this.persist();
-        }
-      });
-      p.add([icon, t, desc, btn, btnText]);
-      this.machineRows.push({ id: m.id, desc, btn, btnText, title: t });
-    });
-    const close = this.add.rectangle(W / 2, 1160, 260, 72, COL.panelLight).setInteractive({ useHandCursor: true });
-    const closeT = text(this, W / 2, 1160, "Close", 28).setOrigin(0.5);
-    close.on("pointerdown", () => this.showUpgrades(false));
-    p.add([close, closeT]);
-    this.upgradePanel = p;
-  }
-
-  // ---------- actions ----------
-
-  private tapPlot(i: number) {
-    if (i >= this.s.plots.length) return;
-    const now = Date.now();
-    const p = this.s.plots[i];
-    const { x, y } = plotPos(i);
-    if (L.isRipe(this.s, p, now)) {
-      const id = L.harvest(this.s, i, now)!;
-      this.floatIcon(x, y, id);
-      // Replant straight away if we can: keeps tapping snappy.
-      L.plant(this.s, i, this.s.selected, now);
-    } else if (!p.crop) {
-      if (!L.plant(this.s, i, this.s.selected, now)) {
-        if (!this.dragging || this.input.activePointer.getDuration() < 50) this.toast("Not enough coins for seeds. Sell your crops!");
+        this.group.add(c);
+        c.position.copy(target);
       }
     }
-    this.refreshAll();
   }
-
-  private tapCrop(id: string) {
-    if (this.s.unlocked.includes(id)) {
-      this.s.selected = id;
-    } else if (L.unlockCrop(this.s, id)) {
-      this.toast(`${L.cropById(id).name} unlocked!`);
-      this.persist();
-    } else {
-      const c = L.cropById(id);
-      const idx = L.CROPS.indexOf(c);
-      const prev = L.CROPS[idx - 1];
-      this.toast(this.s.unlocked.includes(prev.id) ? `Unlock ${c.name} for ${L.formatNum(c.unlock)} coins` : `Unlock ${prev.name} first`);
-    }
-    this.refreshAll();
-  }
-
-  private buy(id: L.UpgradeId) {
-    if (L.buyUpgrade(this.s, id)) {
-      this.refreshAll();
-      this.persist();
-    }
-  }
-
-  private showUpgrades(on: boolean) {
-    this.upgradePanel.setVisible(on);
-    this.refreshAll();
-  }
-
-  // ---------- drawing state ----------
-
-  private refreshAll() {
-    const s = this.s;
-    this.coinText.setText(L.formatNum(s.coins));
-    this.totalText.setText(`Total earned: ${L.formatNum(s.lifetime)}`);
-
-    this.plots.forEach((v, i) => {
-      const owned = i < s.plots.length;
-      v.bg.setVisible(owned);
-      v.barBg.setVisible(owned && !!s.plots[i]?.crop);
-      v.bar.setVisible(owned && !!s.plots[i]?.crop);
-      if (!owned) v.sprite.setVisible(false);
-      const slot = this.emptySlots[i];
-      const nextSlot = i === s.plots.length;
-      slot.setVisible(nextSlot);
-      if (nextSlot) {
-        const cost = L.upgradeCost(s, "plot");
-        (slot.getData("cost") as Phaser.GameObjects.Text).setText(cost === null ? "" : `${L.formatNum(cost)} coins`);
-        slot.setAlpha(cost !== null && s.coins >= cost ? 1 : 0.55);
-      }
+  collect(to: () => THREE.Vector3): number {
+    const v = this.value;
+    this.value = 0;
+    this.coins.forEach((c, i) => {
+      const from = c.getWorldPosition(V());
+      c.userData.dead = true;
+      c.parent?.remove(c);
+      const nc = M.coinMesh();
+      setTimeout(() => fly(nc, from, to, undefined, 0.25, 1.0), i * 12);
     });
-
-    this.cropButtons.forEach((b) => {
-      const crop = L.cropById(b.id);
-      const unlocked = s.unlocked.includes(b.id);
-      b.lock.setVisible(!unlocked);
-      b.icon.setAlpha(unlocked ? 1 : 0.25);
-      b.label.setText(unlocked ? `${crop.seed}` : L.formatNum(crop.unlock));
-      b.label.setColor(unlocked ? COL.text : s.coins >= crop.unlock ? COL.gold : COL.muted);
-      b.bg.setStrokeStyle(4, 0xf5c542, s.selected === b.id ? 1 : 0);
-      b.bg.setFillStyle(s.selected === b.id ? 0x7a5238 : COL.panelLight);
-    });
-
-    const inv = L.inventoryValue(s);
-    const count = Object.values(s.inventory).reduce((a, b) => a + b, 0);
-    this.sellBtn.label.setText(inv > 0 ? `Sell ${L.formatNum(inv)}` : "Sell");
-    this.sellBtn.bg.setFillStyle(inv > 0 ? COL.good : COL.disabled);
-    this.invText.setText(count > 0 ? `${count} crops in your basket` : "Basket is empty");
-
-    this.orderGroup.setVisible(!!s.order);
-    if (s.order) {
-      const have = Math.min(s.inventory[s.order.crop] ?? 0, s.order.qty);
-      this.orderIcon.setTexture(`ripe-${s.order.crop}`);
-      this.orderText.setText(`${have}/${s.order.qty}\nPays ${L.formatNum(s.order.reward)}`);
-      this.orderBg.setStrokeStyle(5, L.canFulfil(s) ? 0x43a047 : 0xffffff);
-    }
-
-    if (this.upgradePanel.visible) {
-      this.upgradeRows.forEach((r) => {
-        const def = L.UPGRADES.find((u) => u.id === r.id)!;
-        const lvl = s.levels[r.id];
-        const cost = L.upgradeCost(s, r.id);
-        r.title.setText(`${def.name}  ·  Lv ${lvl}`);
-        r.desc.setText(def.describe(lvl));
-        r.btnText.setText(cost === null ? "Max" : L.formatNum(cost));
-        r.btn.setFillStyle(cost !== null && s.coins >= cost ? COL.good : COL.disabled);
-      });
-    }
-
-    this.machineViews.forEach((v, i) => {
-      const owned = L.has(s, v.id);
-      const def = L.MACHINES[i];
-      const next = !owned && (i === 0 || L.has(s, L.MACHINES[i - 1].id));
-      v.icon.setAlpha(owned ? 1 : next ? 0.45 : 0.15);
-      v.extra?.setAlpha(owned ? 1 : next ? 0.45 : 0.15);
-      v.label.setText(owned ? def.name : next ? `${L.formatNum(def.cost)}` : "?");
-      v.label.setColor(owned ? COL.text : next && s.coins >= def.cost ? COL.gold : "#e8f5e9");
-      if (owned && !v.owned) this.animateMachine(v);
-      v.owned = owned;
-    });
-
-    if (this.upgradePanel.visible) {
-      this.machineRows.forEach((r, i) => {
-        const def = L.MACHINES[i];
-        const owned = L.has(s, r.id);
-        const unlockable = i === 0 || L.has(s, L.MACHINES[i - 1].id);
-        r.btnText.setText(owned ? "Built" : unlockable ? L.formatNum(def.cost) : "Locked");
-        r.btn.setFillStyle(!owned && unlockable && s.coins >= def.cost ? COL.good : COL.disabled);
-      });
-    }
-
-    if (s.lifetime > this.bestSent) {
-      this.bestSent = s.lifetime;
-      sendScore(s.lifetime);
-    }
-  }
-
-  update(_t: number, dt: number) {
-    if (!this.s) return;
-    const now = Date.now();
-    const s = this.s;
-
-    this.plots.forEach((v, i) => {
-      const p = s.plots[i];
-      if (!p) return;
-      if (!p.crop) {
-        if (v.lastStage !== "") { v.sprite.setVisible(false); v.lastStage = ""; }
-        return;
-      }
-      const pr = L.progress(s, p, now);
-      v.bar.width = (PLOT_W - 40) * pr;
-      v.bar.setFillStyle(pr >= 1 ? 0xf5c542 : 0x9ccc65);
-      const stage = pr >= 1 ? `ripe-${p.crop}` : pr >= 0.4 ? `grow-${p.crop}` : "sprout";
-      if (stage !== v.lastStage) {
-        v.lastStage = stage;
-        v.sprite.setTexture(stage).setVisible(true).setScale(1.1);
-        if (pr >= 1) this.tweens.add({ targets: v.sprite, scale: 1.3, duration: 120, yoyo: true });
-      }
-    });
-
-    const every = L.machineInterval(s) * 1000;
-    this.machineClock += dt;
-    if (this.machineClock >= every) {
-      this.machineClock = 0;
-      if (L.machineTick(s, now) > 0) this.refreshAll();
-    }
-
-    // A new customer arrives a few seconds after the last one leaves.
-    if (!s.order && s.lifetime >= 15) {
-      this.orderClock += dt;
-      if (this.orderClock > 4000) {
-        s.order = L.newOrder(s);
-        this.orderClock = 0;
-        this.refreshAll();
-      }
-    }
-
-    this.saveClock += dt;
-    if (this.saveClock > 5000) {
-      this.saveClock = 0;
-      this.persist();
-      this.refreshAll();
-    }
-  }
-
-  private persist() {
-    this.s.lastSeen = Date.now();
-    save(GAME_ID, JSON.stringify(this.s));
-  }
-
-  // ---------- small effects ----------
-
-  private animateMachine(v: { id: L.MachineId; icon: Phaser.GameObjects.Image; extra?: Phaser.GameObjects.Image }) {
-    if (v.id === "windmill" && v.extra) {
-      this.tweens.add({ targets: v.extra, angle: 360, duration: 3000, repeat: -1 });
-    } else if (v.id === "tractor" || v.id === "harvester") {
-      this.tweens.add({ targets: v.icon, x: v.icon.x + 6, y: v.icon.y - 3, duration: 260, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
-    } else if (v.id === "dam" || v.id === "well") {
-      this.tweens.add({ targets: v.icon, scale: 0.95, duration: 900, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
-    }
-  }
-
-  private floatText(x: number, y: number, str: string) {
-    const t = text(this, x, y, str, 40, COL.gold).setOrigin(0.5).setStroke("#3e2a1f", 6).setDepth(5);
-    this.tweens.add({ targets: t, y: y - 80, alpha: 0, duration: 900, onComplete: () => t.destroy() });
-  }
-
-  private floatIcon(x: number, y: number, cropId: string) {
-    const img = this.add.image(x, y, `ripe-${cropId}`).setDepth(5);
-    this.tweens.add({ targets: img, x: 560, y: 1060, scale: 0.4, duration: 450, ease: "Quad.easeIn", onComplete: () => img.destroy() });
-  }
-
-  private toastObj?: Phaser.GameObjects.Container;
-  private toast(msg: string) {
-    this.toastObj?.destroy();
-    const t = text(this, 0, 0, msg, 26).setOrigin(0.5).setWordWrapWidth(W - 120).setAlign("center");
-    const bg = this.add.rectangle(0, 0, Math.min(W - 60, t.width + 48), t.height + 32, 0x000000, 0.78);
-    const c = this.add.container(W / 2, 150 + 4 * (PLOT_H + GAP) / 2, [bg, t]).setDepth(20);
-    this.toastObj = c;
-    this.tweens.add({ targets: c, alpha: 0, delay: 2200, duration: 400, onComplete: () => c.destroy() });
+    this.coins = [];
+    return v;
   }
 }
 
-bootGame([MarketGarden]);
+// ------------------------------------------------------------------
+// The farmer
+// ------------------------------------------------------------------
+const farmer = M.farmer();
+scene.add(farmer.root);
+farmer.root.position.set(0, 0, 4);
+const bag = new Pile(farmer.back, 1, 1, 0, 0, 0.27);
+let capacity = 10;
+
+// ------------------------------------------------------------------
+// State shared by many systems
+// ------------------------------------------------------------------
+const built = new Set<string>();
+const spinners: ((dt: number) => void)[] = [];
+let clock = 0;
+let coins = 0, lifetime = 0;
+
+// ------------------------------------------------------------------
+// Effects
+// ------------------------------------------------------------------
+const pops: { obj: THREE.Object3D; t: number; delay: number; base: THREE.Vector3 }[] = [];
+function popIn(obj: THREE.Object3D, delay: number) {
+  pops.push({ obj, t: 0, delay, base: obj.scale.clone() });
+  obj.scale.setScalar(0.0001);
+}
+function updatePops(dt: number) {
+  for (let i = pops.length - 1; i >= 0; i--) {
+    const p = pops[i];
+    if (p.delay > 0) { p.delay -= dt; continue; }
+    p.t = Math.min(1, p.t + dt / 0.45);
+    const s = p.t >= 1 ? 1 : 1 - Math.pow(2, -10 * p.t) * Math.cos(p.t * 9);
+    p.obj.scale.copy(p.base).multiplyScalar(Math.max(0.0001, s));
+    if (p.t >= 1) pops.splice(i, 1);
+  }
+}
+const bits: { m: THREE.Mesh; v: THREE.Vector3; life: number }[] = [];
+const bitGeo = new THREE.BoxGeometry(0.14, 0.14, 0.05);
+function confetti(at: THREE.Vector3) {
+  const cols = [0xf7c531, 0xe53935, 0x43a047, 0x1e88e5, 0xffffff, 0xff7043];
+  for (let i = 0; i < 40; i++) {
+    const m = new THREE.Mesh(bitGeo, M.mat(cols[i % cols.length]));
+    m.position.copy(at);
+    scene.add(m);
+    bits.push({ m, v: V((Math.random() - 0.5) * 7, 5 + Math.random() * 5, (Math.random() - 0.5) * 7), life: 1.4 });
+  }
+}
+function updateBits(dt: number) {
+  for (let i = bits.length - 1; i >= 0; i--) {
+    const b = bits[i];
+    b.life -= dt;
+    b.v.y -= 16 * dt;
+    b.m.position.addScaledVector(b.v, dt);
+    b.m.rotation.x += dt * 8;
+    b.m.rotation.y += dt * 6;
+    if (b.life <= 0 || b.m.position.y < 0) {
+      scene.remove(b.m);
+      bits.splice(i, 1);
+    }
+  }
+}
+const sfx = new Sfx();
+
+// ------------------------------------------------------------------
+// Fields
+// ------------------------------------------------------------------
+interface Tile { pos: THREE.Vector3; plant: THREE.Group; growth: number; field: number }
+const tiles: Tile[] = [];
+function makeField(field: number, cx: number, cz: number, animate: boolean) {
+  const cols = 4, rows = 5, s = 1.4;
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const x = cx + (c - (cols - 1) / 2) * s, z = cz + (r - (rows - 1) / 2) * s;
+      const soil = M.fieldTile();
+      soil.position.set(x, 0.06, z);
+      scene.add(soil);
+      const plant = M.wheatPlant();
+      plant.position.set(x, 0.12, z);
+      plant.rotation.y = Math.random() * Math.PI;
+      scene.add(plant);
+      tiles.push({ pos: V(x, 0, z), plant, growth: 1, field });
+      if (animate) {
+        popIn(soil, (c + r) * 0.04);
+        popIn(plant, (c + r) * 0.04 + 0.1);
+      }
+    }
+  }
+}
+const regrowTime = () => 7 * (built.has("well") ? 0.55 : 1) * (built.has("dam") ? 0.75 : 1);
+
+// ------------------------------------------------------------------
+// Buildings
+// ------------------------------------------------------------------
+interface Box { x0: number; x1: number; z0: number; z1: number }
+const colliders: Box[] = [];
+const solid = (x: number, z: number, w: number, d: number) => colliders.push({ x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2 });
+
+const stallObj = M.stall();
+// The stall faces west, toward the customers; you stock it from the east side.
+stallObj.position.set(-6.4, 0, 4.4);
+stallObj.rotation.y = -Math.PI / 2;
+scene.add(stallObj);
+solid(-6.4, 4.4, 1.3, 3.3);
+const shelfGroup = new THREE.Group();
+shelfGroup.position.set(-6.4, 0.97, 4.4);
+shelfGroup.rotation.y = -Math.PI / 2;
+scene.add(shelfGroup);
+const shelf = new Pile(shelfGroup, 5, 2, 0.6, 0.5, 0.26);
+const sellZone = { pos: V(-4.4, 0, 4.4), r: 1.2 };
+new Decal(1.8, 2.6, sellZone.pos.x, sellZone.pos.z).zone("SELL", "#ffd54f");
+const cashGroup = new THREE.Group();
+cashGroup.position.set(-4.4, 0, 7.0);
+scene.add(cashGroup);
+const cash = new Cash(cashGroup);
+const cashZone = { pos: V(-4.4, 0, 7.0), r: 1.25 };
+
+interface Machine {
+  input: Pile; output: Pile; inZone: THREE.Vector3; outZone: THREE.Vector3; center: THREE.Vector3;
+  from: Kind; to: Kind; secs: number; timer: number; on: boolean; anim: (dt: number, working: boolean) => void;
+}
+function makeMachine(x: number, z: number, from: Kind, to: Kind, secs: number): Machine {
+  const ig = new THREE.Group(); ig.position.set(x + 1.8, 0.1, z + 2.3); scene.add(ig);
+  const og = new THREE.Group(); og.position.set(x - 1.8, 0.1, z + 2.3); scene.add(og);
+  return {
+    input: new Pile(ig, 2, 2), output: new Pile(og, 2, 2), center: V(x, 2, z),
+    inZone: V(x + 1.8, 0, z + 2.3), outZone: V(x - 1.8, 0, z + 2.3),
+    from, to, secs, timer: 0, on: false, anim: () => {},
+  };
+}
+const mill = makeMachine(-4, -4.6, "wheat", "flour", 1.0);
+const bakeryM = makeMachine(-4, -11.6, "flour", "bread", 1.3);
+
+function enableMachine(m: Machine, label: [string, string]) {
+  m.on = true;
+  new Decal(1.9, 1.9, m.inZone.x, m.inZone.z).zone(label[0], "#8bc34a");
+  new Decal(1.9, 1.9, m.outZone.x, m.outZone.z).zone(label[1], "#4fc3f7");
+}
+
+// ------------------------------------------------------------------
+// Vehicles
+// ------------------------------------------------------------------
+interface Vehicle { obj: THREE.Group; load: Pile; cap: number; speed: number; state: string; home: THREE.Vector3; timer: number; think: (v: Vehicle, dt: number) => void }
+const vehicles: Vehicle[] = [];
+function moveTo(obj: THREE.Object3D, target: THREE.Vector3, speed: number, dt: number): boolean {
+  const d = V(target.x - obj.position.x, 0, target.z - obj.position.z);
+  const dist = d.length();
+  if (dist < 0.15) return true;
+  const step = Math.min(dist, speed * dt);
+  d.normalize();
+  obj.position.x += d.x * step;
+  obj.position.z += d.z * step;
+  const want = Math.atan2(d.x, d.z);
+  let diff = want - obj.rotation.y;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  obj.rotation.y += diff * Math.min(1, dt * 10);
+  return dist - step < 0.15;
+}
+function harvestInto(t: Tile, load: Pile) {
+  t.growth = 0;
+  load.add("wheat", t.pos.clone().setY(0.6));
+  sfx.pop();
+}
+function unloadTick(v: Vehicle, dt: number, target: Pile): boolean {
+  v.timer -= dt;
+  if (v.timer > 0) return v.load.count === 0;
+  v.timer = 0.07;
+  const it = v.load.take();
+  if (it) target.add(it.kind, it.at);
+  return v.load.count === 0;
+}
+const vSpeed = (v: Vehicle) => v.speed * (built.has("dam") ? 1.3 : 1);
+function fieldWorker(field: number) {
+  return (v: Vehicle, dt: number) => {
+    if (v.state === "gather") {
+      if (v.load.count >= v.cap) { v.state = "deliver"; return; }
+      let best: Tile | null = null, bd = Infinity;
+      for (const t of tiles) {
+        if (t.field !== field || t.growth < 1) continue;
+        const d = t.pos.distanceToSquared(v.obj.position);
+        if (d < bd) { bd = d; best = t; }
+      }
+      if (!best) { v.state = v.load.count > 0 ? "deliver" : "home"; return; }
+      if (moveTo(v.obj, best.pos, vSpeed(v), dt)) harvestInto(best, v.load);
+      for (const t of tiles) {
+        if (t.field === field && t.growth >= 1 && v.load.count < v.cap && t.pos.distanceTo(v.obj.position) < 0.8) harvestInto(t, v.load);
+      }
+    } else if (v.state === "deliver") {
+      const target = mill.on ? mill.inZone : sellZone.pos;
+      if (moveTo(v.obj, target, vSpeed(v), dt) && unloadTick(v, dt, mill.on ? mill.input : shelf)) v.state = "gather";
+    } else {
+      if (tiles.some((t) => t.field === field && t.growth >= 1)) v.state = "gather";
+      else moveTo(v.obj, v.home, vSpeed(v), dt);
+    }
+  };
+}
+function vanWorker(v: Vehicle, dt: number) {
+  if (v.state === "fetch") {
+    if (moveTo(v.obj, bakeryM.outZone, vSpeed(v), dt)) {
+      v.timer -= dt;
+      if (v.timer <= 0) {
+        v.timer = 0.07;
+        const it = bakeryM.output.take();
+        if (it) v.load.add(it.kind, it.at);
+        if (v.load.count >= v.cap || (!it && v.load.count > 0)) v.state = "deliver";
+        else if (!it) v.state = "home";
+      }
+    }
+  } else if (v.state === "deliver") {
+    if (moveTo(v.obj, sellZone.pos.clone().add(V(1.4, 0, -0.6)), vSpeed(v), dt) && unloadTick(v, dt, shelf)) v.state = "home";
+  } else {
+    if (bakeryM.output.count >= 4) v.state = "fetch";
+    else moveTo(v.obj, v.home, vSpeed(v), dt);
+  }
+}
+function addVehicle(obj: THREE.Group, home: THREE.Vector3, cap: number, speed: number, think: Vehicle["think"]) {
+  obj.position.copy(home);
+  scene.add(obj);
+  popIn(obj, 0);
+  const lg = obj.getObjectByName("load")!;
+  vehicles.push({ obj, load: new Pile(lg, 2, 2, 0.5, 0.45, 0.26), cap, speed, state: "home", home: home.clone(), timer: 0, think });
+}
+function garage(x: number, z: number) {
+  const g = new THREE.Group();
+  const B = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d);
+  g.add(M.mesh(B(2.4, 0.06, 2.8), 0x8c8c8c, 0, 0.03, 0, false));
+  for (const [px, pz] of [[-1.1, -1.3], [1.1, -1.3], [-1.1, 1.3], [1.1, 1.3]]) g.add(M.mesh(B(0.15, 2.4, 0.15), M.COLORS.woodDark, px, 1.2, pz));
+  g.add(M.mesh(B(2.7, 0.15, 3.1), M.COLORS.roofRed, 0, 2.45, 0));
+  g.position.set(x, 0, z);
+  scene.add(g);
+  popIn(g, 0);
+}
+
+// ------------------------------------------------------------------
+// Build pads: stand on them to spend coins
+// ------------------------------------------------------------------
+interface PadDef { id: string; name: string; cost: number; x: number; z: number; build: (animate: boolean) => void }
+const PADS: PadDef[] = [
+  { id: "field2", name: "New field", cost: 30, x: 4, z: -9.6, build: (a) => makeField(2, 4, -9.6, a) },
+  {
+    id: "windmill", name: "Windmill", cost: 80, x: -4, z: -4.6, build: (a) => {
+      const w = M.windmill();
+      w.root.position.set(-4, 0, -4.6);
+      scene.add(w.root);
+      if (a) popIn(w.root, 0);
+      solid(-4, -4.6, 2.8, 2.8);
+      enableMachine(mill, ["WHEAT", "FLOUR"]);
+      mill.anim = (dt, working) => { w.blades.rotation.z -= dt * (working ? 4 : 0.6); };
+    },
+  },
+  { id: "basket", name: "Big basket", cost: 120, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 20); } },
+  {
+    id: "well", name: "Water well", cost: 160, x: 0.4, z: -5.8, build: (a) => {
+      const w = M.well();
+      w.root.position.set(0.4, 0, -5.8);
+      scene.add(w.root);
+      if (a) popIn(w.root, 0);
+      solid(0.4, -5.8, 1.8, 1.8);
+      spinners.push(() => { w.bucket.position.y = 1.4 + Math.sin(clock * 2) * 0.25; });
+    },
+  },
+  {
+    id: "bakery", name: "Bakery", cost: 400, x: -4, z: -11.6, build: (a) => {
+      const b = M.bakery();
+      b.root.position.set(-4, 0, -11.6);
+      scene.add(b.root);
+      if (a) popIn(b.root, 0);
+      solid(-4, -11.6, 3.2, 2.6);
+      enableMachine(bakeryM, ["FLOUR", "BREAD"]);
+      bakeryM.anim = (_dt, working) => {
+        b.smoke.children.forEach((p, i) => {
+          p.position.y = ((clock * 0.6 + i * 0.33) % 1) * 1.4;
+          p.scale.setScalar(working ? 0.6 + p.position.y * 0.5 : 0.001);
+        });
+      };
+    },
+  },
+  {
+    id: "tractor", name: "Tractor", cost: 700, x: 8.6, z: -2, build: () => {
+      garage(8.6, -2);
+      addVehicle(M.tractor(), V(8.6, 0, -2), 8, 3.2, fieldWorker(1));
+    },
+  },
+  { id: "basket2", name: "Huge basket", cost: 900, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 35); } },
+  {
+    id: "harvester", name: "Harvester", cost: 1500, x: 8.6, z: -9.6, build: () => {
+      garage(8.6, -9.6);
+      addVehicle(M.harvester(), V(8.6, 0, -9.6), 14, 3.0, fieldWorker(2));
+    },
+  },
+  {
+    id: "van", name: "Delivery van", cost: 2500, x: -9, z: -1, build: () => {
+      garage(-9, -1);
+      addVehicle(M.van(), V(-9, 0, -1), 12, 4.5, vanWorker);
+    },
+  },
+  {
+    id: "dam", name: "Hydro dam", cost: 5000, x: 0, z: -15.4, build: (a) => {
+      const d = M.dam();
+      d.root.position.set(0, 0, -18.6);
+      scene.add(d.root);
+      if (a) popIn(d.root, 0);
+      solid(0, -18.6, 7.2, 1.8);
+      spinners.push((dt) => d.turbines.forEach((t) => (t.rotation.y += dt * 6)));
+    },
+  },
+];
+
+interface LivePad { def: PadDef; paid: number; decal: Decal; acc: number; coinTimer: number }
+let livePads: LivePad[] = [];
+const paidSaved: Record<string, number> = {};
+
+function refreshPads() {
+  // Show the next two things you can build, in order.
+  const next = PADS.filter((p) => !built.has(p.id)).slice(0, 2);
+  livePads = livePads.filter((lp) => {
+    if (next.includes(lp.def)) return true;
+    lp.decal.dispose();
+    return false;
+  });
+  for (const def of next) {
+    if (livePads.some((lp) => lp.def === def)) continue;
+    const decal = new Decal(2.4, 2.4, def.x, def.z);
+    const lp: LivePad = { def, paid: paidSaved[def.id] ?? 0, decal, acc: 0, coinTimer: 0 };
+    decal.pad(def.name, def.cost - lp.paid, lp.paid / def.cost);
+    popIn(decal.mesh, 0.1);
+    livePads.push(lp);
+  }
+}
+
+// ------------------------------------------------------------------
+// HUD
+// ------------------------------------------------------------------
+const $ = (id: string) => document.getElementById(id)!;
+const hudCoins = $("coins"), hudBag = $("bag"), hint = $("hint"), toastEl = $("toast");
+const joyBase = $("joy"), joyKnob = $("knob");
+let shownCoins = -1, toastTimer = 0;
+function toast(msg: string) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  toastTimer = 2.2;
+}
+
+function completePad(lp: LivePad) {
+  built.add(lp.def.id);
+  delete paidSaved[lp.def.id];
+  lp.def.build(true);
+  confetti(V(lp.def.x, 1, lp.def.z));
+  sfx.build();
+  toast(`${lp.def.name} built!`);
+  refreshPads();
+  persist();
+}
+
+// ------------------------------------------------------------------
+// Customers
+// ------------------------------------------------------------------
+interface Customer { obj: THREE.Group; state: "walk" | "leave"; want: number; got: number; paid: number; timer: number; label: M.Label; hands: Pile }
+const customers: Customer[] = [];
+const SHIRTS = [0xe57373, 0x64b5f6, 0x81c784, 0xffb74d, 0xba68c8, 0x4db6ac, 0xf06292, 0xfff176];
+let spawnTimer = 0;
+const queueSlot = (i: number) => (i === 0 ? V(-7.9, 0, 4.4) : V(-8.4, 0, 4.4 + i * 1.2));
+
+function walkAnim(obj: THREE.Object3D, moving: boolean) {
+  const k = moving ? Math.sin(clock * 12 + obj.id) : 0;
+  obj.children[0].rotation.x = k * 0.5;
+  obj.children[1].rotation.x = -k * 0.5;
+  obj.position.y = moving ? Math.abs(k) * 0.06 : 0;
+}
+
+function updateCustomers(dt: number) {
+  spawnTimer -= dt;
+  const max = built.has("bakery") ? 6 : 4;
+  if (spawnTimer <= 0 && customers.length < max) {
+    spawnTimer = built.has("bakery") ? 2.0 : 3.0;
+    const obj = M.person(SHIRTS[Math.floor(Math.random() * SHIRTS.length)]);
+    obj.position.set(-17, 0, 8.2);
+    scene.add(obj);
+    const label = new M.Label(160, 80, 1.3);
+    label.sprite.position.set(0, 2.2, 0);
+    label.sprite.visible = false;
+    obj.add(label.sprite);
+    const hg = new THREE.Group();
+    hg.position.set(0, 0.9, 0.35);
+    obj.add(hg);
+    const maxWant = built.has("bakery") ? 5 : built.has("windmill") ? 4 : 3;
+    customers.push({ obj, state: "walk", want: 1 + Math.floor(Math.random() * maxWant), got: 0, paid: 0, timer: 0, label, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
+  }
+  let queueIdx = 0;
+  for (const c of [...customers]) {
+    if (c.state === "leave") {
+      c.label.sprite.visible = false;
+      if (moveTo(c.obj, V(-17, 0, 1.5), 3.2, dt)) {
+        scene.remove(c.obj);
+        customers.splice(customers.indexOf(c), 1);
+      }
+      walkAnim(c.obj, true);
+      continue;
+    }
+    const arrived = moveTo(c.obj, queueSlot(queueIdx), 2.8, dt);
+    walkAnim(c.obj, !arrived);
+    if (arrived) {
+      let diff = Math.PI / 2 - c.obj.rotation.y;
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      c.obj.rotation.y += diff * Math.min(1, dt * 8);
+      if (queueIdx === 0) {
+        c.label.sprite.visible = true;
+        c.label.set(`${c.got} / ${c.want}`, "WANTS");
+        c.timer -= dt;
+        if (c.timer <= 0 && shelf.count > 0) {
+          c.timer = 0.3;
+          // Customers take the most valuable thing on the shelf.
+          const best = (["bread", "flour", "wheat"] as Kind[]).find((k) => shelf.countOf(k) > 0)!;
+          const it = shelf.take((k) => k === best);
+          if (it) {
+            c.hands.add(it.kind, it.at);
+            c.got++;
+            c.paid += PRICE[it.kind];
+            sfx.tick();
+          }
+          if (c.got >= c.want) {
+            cash.add(c.paid, c.obj.position.clone().setY(1.2));
+            sfx.coin();
+            c.state = "leave";
+          }
+        }
+      }
+    }
+    queueIdx++;
+  }
+}
+
+// Bouncing arrow that points at what to do next.
+const arrow = new THREE.Group();
+const arrowMesh = M.mesh(new THREE.ConeGeometry(0.45, 0.9, 4), 0xffeb3b, 0, 0, 0, false);
+arrowMesh.rotation.x = Math.PI;
+arrow.add(arrowMesh);
+scene.add(arrow);
+
+// ------------------------------------------------------------------
+// Input: drag anywhere for a joystick, or WASD / arrows
+// ------------------------------------------------------------------
+const move = V();
+let joyId: number | null = null;
+const joyOrigin = { x: 0, y: 0 };
+const keys = new Set<string>();
+window.addEventListener("pointerdown", (e) => {
+  sfx.unlock();
+  if (joyId !== null) return;
+  joyId = e.pointerId;
+  joyOrigin.x = e.clientX;
+  joyOrigin.y = e.clientY;
+  joyBase.style.left = `${e.clientX}px`;
+  joyBase.style.top = `${e.clientY}px`;
+  joyKnob.style.transform = "translate(-50%, -50%)";
+  joyBase.classList.add("on");
+});
+window.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== joyId) return;
+  const dx = e.clientX - joyOrigin.x, dy = e.clientY - joyOrigin.y;
+  const len = Math.hypot(dx, dy), max = 55;
+  const k = len > max ? max / len : 1;
+  joyKnob.style.transform = `translate(calc(-50% + ${dx * k}px), calc(-50% + ${dy * k}px))`;
+  if (len < 6) move.set(0, 0, 0);
+  else move.set(dx, 0, dy).normalize().multiplyScalar(Math.min(1, len / max));
+});
+const endJoy = (e: PointerEvent) => {
+  if (e.pointerId !== joyId) return;
+  joyId = null;
+  move.set(0, 0, 0);
+  joyBase.classList.remove("on");
+};
+window.addEventListener("pointerup", endJoy);
+window.addEventListener("pointercancel", endJoy);
+window.addEventListener("keydown", (e) => { keys.add(e.key.toLowerCase()); sfx.unlock(); });
+window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+function keyMove() {
+  const v = V((keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0), 0,
+    (keys.has("s") || keys.has("arrowdown") ? 1 : 0) - (keys.has("w") || keys.has("arrowup") ? 1 : 0));
+  return v.lengthSq() ? v.normalize() : null;
+}
+
+// ------------------------------------------------------------------
+// Player logic
+// ------------------------------------------------------------------
+let walkPhase = 0, dropTimer = 0, payTick = 0, fullWarn = 0;
+const playerPos = () => farmer.root.position;
+const near = (p: THREE.Vector3, r: number) => Math.hypot(p.x - playerPos().x, p.z - playerPos().z) < r;
+
+function updatePlayer(dt: number) {
+  const dir = keyMove() ?? move;
+  const pos = farmer.root.position;
+  if (dir.lengthSq() > 0.001) {
+    pos.addScaledVector(dir, 6.2 * dt);
+    const want = Math.atan2(dir.x, dir.z);
+    let diff = want - farmer.root.rotation.y;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    farmer.root.rotation.y += diff * Math.min(1, dt * 14);
+    walkPhase += dt * 13 * dir.length();
+  } else walkPhase = 0;
+  const k = Math.sin(walkPhase);
+  farmer.legL.rotation.x = k * 0.6;
+  farmer.legR.rotation.x = -k * 0.6;
+  farmer.body.position.y = Math.abs(k) * 0.08;
+  farmer.back.rotation.x = -k * 0.03;
+
+  // bounds and building collisions
+  pos.x = THREE.MathUtils.clamp(pos.x, -11.5, 11.5);
+  pos.z = THREE.MathUtils.clamp(pos.z, -16.5, 11);
+  const r = 0.4;
+  for (const b of colliders) {
+    if (pos.x > b.x0 - r && pos.x < b.x1 + r && pos.z > b.z0 - r && pos.z < b.z1 + r) {
+      const dl = pos.x - (b.x0 - r), dr = b.x1 + r - pos.x, dn = pos.z - (b.z0 - r), ds = b.z1 + r - pos.z;
+      const m = Math.min(dl, dr, dn, ds);
+      if (m === dl) pos.x = b.x0 - r; else if (m === dr) pos.x = b.x1 + r; else if (m === dn) pos.z = b.z0 - r; else pos.z = b.z1 + r;
+    }
+  }
+
+  // harvest by walking through ripe wheat
+  fullWarn -= dt;
+  for (const t of tiles) {
+    if (t.growth < 1 || !near(t.pos, 0.95)) continue;
+    if (bag.count >= capacity) {
+      if (fullWarn <= 0) { toast("Basket full! Take it to the stall"); fullWarn = 4; }
+      break;
+    }
+    t.growth = 0;
+    bag.add("wheat", t.pos.clone().setY(0.7));
+    sfx.pop();
+  }
+
+  // drop off and pick up, one item at a time
+  dropTimer -= dt;
+  if (dropTimer <= 0) {
+    let did = false;
+    if (near(sellZone.pos, sellZone.r) && bag.count > 0) {
+      const it = bag.take();
+      if (it) { shelf.add(it.kind, it.at); did = true; }
+    }
+    for (const m of [mill, bakeryM]) {
+      if (!m.on) continue;
+      if (near(m.inZone, 1.1)) {
+        const it = bag.take((kk) => kk === m.from);
+        if (it) { m.input.add(it.kind, it.at); did = true; }
+      }
+      if (near(m.outZone, 1.1) && bag.count < capacity) {
+        const it = m.output.take();
+        if (it) { bag.add(it.kind, it.at); did = true; }
+      }
+    }
+    if (did) { dropTimer = 0.06; sfx.tick(); }
+  }
+
+  if (near(cashZone.pos, cashZone.r) && cash.value > 0) {
+    const v = cash.collect(() => playerPos().clone().setY(1.4));
+    coins += v;
+    lifetime += v;
+    P.sendScore(lifetime);
+    sfx.coin();
+  }
+
+  // pay into build pads
+  for (const lp of livePads) {
+    if (!near(V(lp.def.x, 0, lp.def.z), 1.25) || coins <= 0) { lp.acc = 0; continue; }
+    lp.acc += Math.max(25, lp.def.cost / 1.6) * dt;
+    const amt = Math.min(Math.floor(lp.acc), coins, lp.def.cost - lp.paid);
+    if (amt > 0) {
+      lp.acc -= amt;
+      coins -= amt;
+      lp.paid += amt;
+      paidSaved[lp.def.id] = lp.paid;
+      lp.decal.pad(lp.def.name, lp.def.cost - lp.paid, lp.paid / lp.def.cost);
+    }
+    lp.coinTimer -= dt;
+    if (lp.coinTimer <= 0) {
+      lp.coinTimer = 0.05;
+      fly(M.coinMesh(), playerPos().clone().setY(1.3), () => V(lp.def.x, 0.1, lp.def.z), undefined, 0.22, 0.8);
+      if (++payTick % 2 === 0) sfx.tick();
+    }
+    if (lp.paid >= lp.def.cost) completePad(lp);
+    break;
+  }
+}
+
+// ------------------------------------------------------------------
+// Machines, fields, guidance
+// ------------------------------------------------------------------
+function updateMachines(dt: number) {
+  for (const m of [mill, bakeryM]) {
+    if (!m.on) continue;
+    const working = m.input.count > 0 && m.output.count < 40;
+    m.anim(dt, working);
+    if (!working) { m.timer = 0; continue; }
+    m.timer += dt;
+    if (m.timer >= m.secs * (built.has("dam") ? 0.5 : 1)) {
+      m.timer = 0;
+      if (m.input.take()) m.output.add(m.to, m.center);
+    }
+  }
+}
+
+function updateFields(dt: number) {
+  const rt = regrowTime();
+  for (const t of tiles) {
+    if (t.growth < 1) t.growth = Math.min(1, t.growth + dt / rt);
+    const s = 0.15 + 0.85 * t.growth;
+    t.plant.scale.set(s, s, s);
+    t.plant.rotation.z = t.growth >= 1 ? Math.sin(clock * 2 + t.pos.x) * 0.05 : 0;
+  }
+}
+
+function updateGuide() {
+  let target: THREE.Vector3 | null = null;
+  let msg = "";
+  const nextPad = livePads[0];
+  if (lifetime === 0 && cash.value === 0) {
+    if (bag.count === 0 && shelf.count === 0) { msg = "Walk into the wheat to harvest it"; target = V(4, 0, -1.8); }
+    else if (bag.count > 0) { msg = "Carry it to the market stall"; target = sellZone.pos; }
+    else msg = "Customers are buying...";
+  } else if (cash.value > 0 && lifetime < 20) {
+    msg = "Collect your coins"; target = cashZone.pos;
+  } else if (built.size === 0 && nextPad && coins >= 10) {
+    msg = "Stand on the pad to build"; target = V(nextPad.def.x, 0, nextPad.def.z);
+  } else if (built.has("windmill") && built.size <= 2 && lifetime < 250 && bag.countOf("wheat") > 0) {
+    msg = "Flour sells for more: drop wheat at the windmill"; target = mill.inZone;
+  } else if (nextPad && coins + nextPad.paid >= nextPad.def.cost) {
+    target = V(nextPad.def.x, 0, nextPad.def.z);
+  }
+  hint.textContent = msg;
+  hint.classList.toggle("show", !!msg);
+  arrow.visible = !!target;
+  if (target) arrow.position.set(target.x, 1.3 + Math.abs(Math.sin(clock * 4)) * 0.6, target.z);
+}
+
+// ------------------------------------------------------------------
+// Save / load
+// ------------------------------------------------------------------
+interface SaveData {
+  v: 2; coins: number; lifetime: number; built: string[]; paid: Record<string, number>;
+  bag: Kind[]; shelf: Kind[]; mill: [Kind[], Kind[]]; bakery: [Kind[], Kind[]]; cash: number;
+}
+function persist() {
+  const d: SaveData = {
+    v: 2, coins, lifetime, built: [...built], paid: { ...paidSaved }, bag: bag.kinds(), shelf: shelf.kinds(),
+    mill: [mill.input.kinds(), mill.output.kinds()], bakery: [bakeryM.input.kinds(), bakeryM.output.kinds()], cash: cash.value,
+  };
+  P.save(GAME_ID, JSON.stringify(d));
+}
+async function load() {
+  let d: SaveData | null = null;
+  try {
+    const raw = await P.loadSave(GAME_ID);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && parsed.v === 2) d = parsed;
+  } catch { /* fresh start */ }
+  makeField(1, 4, -2, false);
+  if (d) {
+    coins = d.coins;
+    lifetime = d.lifetime;
+    Object.assign(paidSaved, d.paid ?? {});
+    for (const p of PADS) if (d.built.includes(p.id)) { built.add(p.id); p.build(false); }
+    d.bag.forEach((k) => bag.add(k));
+    d.shelf.forEach((k) => shelf.add(k));
+    d.mill[0].forEach((k) => mill.input.add(k));
+    d.mill[1].forEach((k) => mill.output.add(k));
+    d.bakery[0].forEach((k) => bakeryM.input.add(k));
+    d.bakery[1].forEach((k) => bakeryM.output.add(k));
+    if (d.cash > 0) cash.add(d.cash);
+  }
+  // Restored things appear instantly, without the pop-in.
+  pops.forEach((p) => p.obj.scale.copy(p.base));
+  pops.length = 0;
+  refreshPads();
+}
+
+// ------------------------------------------------------------------
+// Main loop
+// ------------------------------------------------------------------
+let saveTimer = 0, last = performance.now(), running = true, readySent = false;
+
+function frame(now: number) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  clock += dt;
+
+  updatePlayer(dt);
+  updateFields(dt);
+  updateMachines(dt);
+  updateCustomers(dt);
+  for (const v of vehicles) {
+    const bx = v.obj.position.x, bz = v.obj.position.z;
+    v.think(v, dt);
+    const moving = Math.abs(bx - v.obj.position.x) + Math.abs(bz - v.obj.position.z) > 1e-4;
+    v.obj.position.y = moving ? Math.abs(Math.sin(clock * 20)) * 0.04 : 0;
+  }
+  spinners.forEach((f) => f(dt));
+  updateFlyers(dt);
+  updatePops(dt);
+  updateBits(dt);
+  updateGuide();
+
+  // camera follows the farmer
+  const goal = farmer.root.position.clone().add(camOffset);
+  camera.position.lerp(goal, Math.min(1, dt * 6));
+  camera.lookAt(camera.position.clone().sub(camOffset).add(V(0, 0.5, 0)));
+  sun.position.copy(farmer.root.position).add(V(8, 18, 6));
+  sun.target.position.copy(farmer.root.position);
+
+  if (shownCoins !== coins) {
+    shownCoins = coins;
+    hudCoins.textContent = fmt(coins);
+    const pill = hudCoins.parentElement!;
+    pill.classList.remove("bump");
+    void pill.offsetWidth;
+    pill.classList.add("bump");
+  }
+  hudBag.textContent = bag.count >= capacity ? "FULL" : `${bag.count}/${capacity}`;
+  hudBag.parentElement!.classList.toggle("full", bag.count >= capacity);
+
+  if (toastTimer > 0) {
+    toastTimer -= dt;
+    if (toastTimer <= 0) toastEl.classList.remove("show");
+  }
+
+  saveTimer += dt;
+  if (saveTimer > 4) { saveTimer = 0; persist(); }
+
+  renderer.render(scene, camera);
+  if (!readySent) {
+    readySent = true;
+    P.gameReady();
+  }
+}
+
+function start() {
+  last = performance.now();
+  renderer.setAnimationLoop(frame);
+}
+
+P.onPause(() => {
+  if (!running) return;
+  running = false;
+  renderer.setAnimationLoop(null);
+  sfx.suspend();
+  persist();
+});
+P.onResume(() => {
+  if (running) return;
+  running = true;
+  sfx.resume();
+  start();
+});
+sfx.enabled = P.isAudioEnabled();
+P.onAudioChange((on) => (sfx.enabled = on));
+
+// Test hook for automated playtests (only with ?debug in the URL).
+if (location.search.includes("debug")) {
+  (window as unknown as Record<string, unknown>).mg = {
+    go: (x: number, z: number) => farmer.root.position.set(x, 0, z),
+    state: () => ({ coins, lifetime, bag: bag.count, shelf: shelf.count, cash: cash.value, built: [...built] }),
+  };
+}
+
+renderer.render(scene, camera);
+P.firstFrameReady();
+load().then(() => {
+  if (lifetime === 0) toast("Welcome to your farm!");
+  start();
+});
