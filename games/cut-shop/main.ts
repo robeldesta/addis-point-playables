@@ -95,7 +95,7 @@ function totals() {
 function renderGo() {
   const t = totals();
   const fc = playing ? `<span>Running the week…</span>` :
-    `Forecast <b>~${fmt(t.units)}</b> orders · laser load <b class="${t.load > 1.05 ? "neg" : ""}">${pct(t.load)}</b><br>Est. profit <b class="${t.profit < 0 ? "neg" : "pos"}">${money(t.profit)}</b> <span class="tiny">(fixed ${money(S.fixedWeekly(s))}/wk)</span>`;
+    `Forecast <b>~${fmt(t.units)}</b> orders · lasers busy <b class="${t.load > 1.05 ? "neg" : ""}">${pct(t.load)}</b><br>Est. profit <b class="${t.profit < 0 ? "neg" : "pos"}">${money(t.profit)}</b> <span class="tiny">(fixed ${money(S.fixedWeekly(s))}/wk)</span>`;
   $("go").innerHTML = `<div class="fc">${fc}</div><button class="run" data-a="run" ${playing || s.over ? "disabled" : ""}>Run week ▶</button>`;
 }
 
@@ -115,8 +115,65 @@ function coachTip(): string {
 
 function stepFor(ref: number) { return ref <= 20 ? 0.25 : ref <= 50 ? 0.5 : ref <= 120 ? 1 : 5; }
 
+
+// --- Advisor: concrete next steps with one-tap actions ----------------------
+
+interface Tip { pri: number; icon: string; text: string; why: string; a?: string; k?: string; v?: string; label?: string; tab?: Tab }
+
+function advice(): Tip[] {
+  const out: Tip[] = [];
+  const t = totals();
+  const open = SEGS.filter((k) => s.open[k] && S.segPossible(s, k));
+  const fc = Object.fromEntries(open.map((k) => [k, S.forecast(s, k)])) as Record<SegId, ReturnType<typeof S.forecast>>;
+  const name = (k: SegId) => SEG[k].name.toLowerCase();
+
+  for (const k of open) if (fc[k].margin < 0) out.push({ pri: 100, icon: "🩸", text: `You lose ${money2(-fc[k].margin)} on every ${name(k)} sale`, why: "The price is below what materials and power cost you. Raise it.", a: "price", k, v: "5", label: "Raise 10%" });
+
+  if (s.cash < 800) out.push({ pri: 95, icon: "🏦", text: "Cash is almost gone", why: "Rent and wages are due every week. A small loan keeps you alive while you fix prices.", a: "borrow", k: "5000", label: "Borrow $5k" });
+
+  for (const m of s.machines) if (m.cond < 55 && !m.service && m.down === 0) out.push({ pri: 90, icon: "🛠️", text: `${MACH[m.kind].name} is wearing out (${Math.round(m.cond)}%)`, why: `Breakdowns cost ${money(MACH[m.kind].repair)} and 2–3 lost days. A service costs ${money(MACH[m.kind].service)} and 1 day.`, a: "service", k: String(m.id), label: "Service it" });
+
+  const lost = s.last ? SEGS.filter((k) => s.last!.seg[k].lost > 0) : [];
+  if (t.load > 1.1 || lost.length) {
+    const staffH = S.staffHours(s), machH = s.machines.length * 80;
+    if (staffH + 20 <= machH && s.cash > 4000) out.push({ pri: 80, icon: "👷", text: "Too many orders for your team", why: `Your laser${s.machines.length > 1 ? "s sit" : " sits"} idle ${Math.round(machH - staffH)}h a week for lack of staff. An operator costs ${money(S.WAGE)}/wk and runs a second shift.`, a: "hire", label: "Hire operator" });
+    // raise price on the product that earns least per laser hour
+    const worst = [...open].sort((a, b) => fc[a].perHour - fc[b].perHour)[0];
+    if (worst) out.push({ pri: 75, icon: "📈", text: `Lasers overloaded (${pct(t.load)}): raise ${name(worst)} prices`, why: `They earn the least per laser hour (${money(fc[worst].perHour)}/h). Fewer, pricier orders free time for better ones${lost.length ? " and stop customers walking out" : ""}.`, a: "price", k: worst, v: "5", label: "Raise 10%" });
+  } else if (t.load < 0.65 && open.length) {
+    const best = [...open].sort((a, b) => fc[b].perHour - fc[a].perHour)[0];
+    out.push({ pri: 60, icon: "📉", text: `Lasers idle (${pct(t.load)} busy): cut ${name(best)} prices`, why: `Idle laser hours earn nothing, and rent is paid anyway. ${SEG[best].name} earn the most per hour (${money(fc[best].perHour)}/h).`, a: "price", k: best, v: "-5", label: "Cut 10%" });
+    if (s.marketing < 300) out.push({ pri: 40, icon: "📣", text: "Spend more on ads", why: "More awareness brings more orders at the same price.", a: "mkt", k: "100", label: "+$100/wk ads" });
+  }
+
+  for (const m of MATS) {
+    const use = weeklyUse(m);
+    if (use > 0 && s.inv[m] < use && S.matPrice(s, m) <= MAT[m].base * 1.05) {
+      const q = 40, room = TIERS[s.tier].storage - S.storageUsed(s);
+      if (room >= q) out.push({ pri: 50, icon: "📦", text: `${MAT[m].name} is cheap and you're low`, why: `Under a week left. Running out means +35% rush prices. 40 sheets get a 6% bulk discount.`, a: "mat", k: m, v: String(q), label: `Buy 40 (${money(S.matOrderCost(s, m, q))})` });
+    }
+  }
+
+  if (s.week >= 3) for (const c of s.contracts) {
+    if (c.status !== "open" || c.bid || !S.segPossible(s, c.seg)) continue;
+    out.push({ pri: 45, icon: "📄", text: `${c.client} wants ${c.qty} ${name(c.seg)}`, why: `Budget ${money2(c.maxPrice)}/unit, your cost ${money2(S.unitVarCost(s, c.seg))}. Needs ${((c.qty * S.unitMinutes(s, c.seg)) / 60).toFixed(0)}h of laser time. Win by being cheap, but don't go below cost.`, a: "bid", k: String(c.id), v: "0", label: "Start a bid" });
+  }
+
+  if (!s.machines.some((m) => m.kind === "pro") && s.cash > 33000) out.push({ pri: 55, icon: "🔶", text: "You can afford a Pro laser", why: "2× faster and precise enough for architect models, the most profitable product. Needs a free slot.", tab: "shop", label: "Go to Shop" });
+  else if (!s.machines.some((m) => m.kind === "pro") && s.cash > 4000 && t.load > 1 && s.workers.length >= 2) out.push({ pri: 35, icon: "🔶", text: "Lease a Pro laser?", why: `${money(MACH.pro.lease)}/wk, no big upfront cost. 2× faster than your hobby laser.`, tab: "shop", label: "Go to Shop" });
+
+  return out.sort((a, b) => b.pri - a.pri).slice(0, 3);
+}
+
+function advisorCard(): string {
+  const tips = advice();
+  const tipHtml = tips.map((x, i) => `<div class="tip"><span class="ico">${x.icon}</span><div class="grow"><b>${esc(x.text)}</b><div class="sub">${esc(x.why)}</div></div>
+    ${x.label ? `<button class="btn sm ${i === 0 ? "pri" : ""}" data-a="${x.tab ? "tab" : "adv"}" data-k="${x.tab ?? i}">${esc(x.label)}</button>` : ""}</div>`).join("");
+  return `<div class="advisor"><div class="adv-h">🧠 Advisor <span>${tips.length ? "do these, then Run week" : ""}</span></div>${tipHtml || `<div class="tip"><span class="ico">✅</span><div class="grow"><b>Looks good. Run the week.</b><div class="sub">Check the results, then come back here.</div></div></div>`}</div>`;
+}
+
 function marketTab(): string {
-  let h = coachTip();
+  let h = advisorCard() + coachTip();
   const open = s.contracts.filter((c) => c.status === "open");
   const active = s.contracts.filter((c) => c.status === "won" || c.status === "late");
   if (open.length || active.length) {
@@ -391,6 +448,7 @@ function introModal(resume: boolean) {
       <li>⏱️ <b>Laser hours are scarce.</b> Spend them on what earns the most per hour.</li>
       <li>🏗️ <b>Grow carefully.</b> Machines, staff and rent are fixed costs. They don't stop when orders do.</li>
       <li>🏆 <b>Goal:</b> highest net worth after ${S.WEEKS} weeks. Don't go bankrupt.</li>
+      <li>🧠 <b>New here?</b> Follow the green <b>Advisor</b> box at the top of the Market tab. Tap its buttons, then press <b>Run week</b>.</li>
     </ul>
     <button class="btn pri" style="width:100%;min-height:48px" data-a="start">${resume ? `Continue week ${s.week}` : "Open the shop"}</button>
     ${resume ? `<button class="btn ghost" style="width:100%;margin-top:8px" data-a="newgame">Start a new year</button>` : ""}`);
@@ -622,7 +680,7 @@ function act(a: string, k: string, v: string) {
       const c = s.contracts.find((x) => x.id === +k);
       if (!c) break;
       const step = stepFor(c.maxPrice);
-      if (!c.bid) c.bid = S.round2(Math.round((c.maxPrice * 0.9) / step) * step);
+      if (!c.bid) c.bid = S.round2(Math.round(Math.min(c.maxPrice * 0.95, Math.max(S.unitVarCost(s, c.seg) * 1.4, c.maxPrice * 0.85)) / step) * step);
       else {
         const n = +v;
         let p = Math.abs(n) === 5 ? c.bid * (1 + Math.sign(n) * 0.1) : c.bid + n * step;
@@ -647,6 +705,11 @@ function act(a: string, k: string, v: string) {
     case "borrow": err = S.borrow(s, +k); break;
     case "repay": err = S.repay(s, Math.min(+k, s.debt)); break;
     case "rseg": rivalSeg = k as SegId; break;
+    case "adv": {
+      const tip = advice()[+k];
+      if (tip?.a) { act(tip.a, tip.k ?? "", tip.v ?? ""); return; }
+      break;
+    }
   }
   if (err) toast(err); else if (a !== "tab") sfx.click();
   persist();

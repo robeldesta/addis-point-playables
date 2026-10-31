@@ -146,3 +146,10 @@ svg.chart { width: 100%; height: 120px; display: block; }
 
 #toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #3a1f15; border: 1px solid var(--laser); color: #fff; padding: 10px 14px; border-radius: 12px; font-size: 13.5px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20; max-width: calc(100vw - 32px); text-align: center; }
 #toast.on { opacity: 1; }
+
+.advisor { background: #1a2420; border: 1px solid #2f5a45; border-radius: var(--r); padding: 10px 12px; margin-bottom: 12px; }
+.adv-h { font-weight: 800; font-size: 13px; color: var(--good); display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.adv-h span { margin-left: auto; font-weight: 600; color: var(--dim); font-size: 11.5px; }
+.tip { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.06); }
+.tip:first-of-type { border-top: 0; }
+.tip b { font-size: 14px; }
