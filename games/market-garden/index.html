@@ -27,13 +27,30 @@
       #hint.show { opacity: 1; transform: translateX(-50%); }
       #toast { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%) scale(.9); background: rgba(40,28,20,.88);
         color: #ffe9a8; font-weight: 800; font-size: 22px; padding: 12px 22px; border-radius: 16px; opacity: 0;
-        transition: opacity .2s, transform .2s; pointer-events: none; text-align: center; max-width: calc(100vw - 32px); z-index: 2; }
+        transition: opacity .2s, transform .2s; pointer-events: none; text-align: center; max-width: calc(100vw - 32px); z-index: 5; }
       #toast.show { opacity: 1; transform: translateX(-50%) scale(1); }
       #joy { position: fixed; width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%;
         background: rgba(255,255,255,.18); border: 3px solid rgba(255,255,255,.55); display: none; pointer-events: none; z-index: 3; }
       #joy.on { display: block; }
       #knob { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; border-radius: 50%;
         background: rgba(255,255,255,.9); transform: translate(-50%, -50%); box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+      #panel { position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
+        width: min(440px, calc(100vw - 24px)); background: rgba(40, 28, 20, 0.92); color: #fff; border-radius: 18px;
+        padding: 12px 12px 8px; box-shadow: 0 6px 0 rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 4;
+        max-height: 55vh; overflow-y: auto; box-sizing: border-box; }
+      #panel.show { opacity: 1; transform: translateX(-50%); pointer-events: auto; }
+      #ptitle { font-weight: 900; font-size: 20px; color: #ffe9a8; margin: 0 4px 8px; }
+      .row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-top: 1px solid rgba(255,255,255,.12); }
+      .rtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .rtext b { font-size: 16px; }
+      .rtext span { font-size: 13px; color: #e6d9c8; }
+      button.buy { position: relative; overflow: hidden; flex: none; min-width: 92px; height: 44px; border: 0; border-radius: 12px;
+        background: #43a047; color: #fff; font: 900 18px Arial, sans-serif; box-shadow: inset 0 -4px 0 rgba(0,0,0,.25); touch-action: none; --p: 0; }
+      button.buy i { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--p) * 100%); background: rgba(255,255,255,.35); }
+      button.buy em { position: relative; font-style: normal; }
+      button.buy.off { background: #7a6a5c; color: #d8ccbf; }
+      button.buy.max { background: #5c4b3d; }
+      .pnote { font-size: 12px; color: #cdbfae; text-align: center; margin-top: 4px; }
     </style>
   </head>
   <body>
@@ -44,6 +61,7 @@
     </div>
     <div id="hint"></div>
     <div id="toast"></div>
+    <div id="panel"><div id="ptitle"></div><div id="prows"></div><div class="pnote">Press and hold a price to buy. Walk off the pad to close.</div></div>
     <div id="joy"><div id="knob"></div></div>
     <script type="module" src="./main.ts"></script>
   </body>

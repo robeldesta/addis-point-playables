@@ -45,7 +45,7 @@ export const COLORS = {
   skin: 0xe0ac7e,
 };
 
-export type ItemKind = "seed" | "wheat" | "flour" | "bread";
+export type ItemKind = "seed" | "wheat" | "flour" | "bread" | "egg" | "milk" | "cheese";
 
 /** One carried item (sized to stack neatly). */
 export function itemMesh(kind: ItemKind): THREE.Object3D {
@@ -62,6 +62,24 @@ export function itemMesh(kind: ItemKind): THREE.Object3D {
   } else if (kind === "flour") {
     g.add(mesh(box(0.56, 0.26, 0.42), COLORS.flour, 0, 0.13, 0));
     g.add(mesh(box(0.2, 0.08, 0.2), 0x6aa0d8, 0, 0.27, 0, false));
+  } else if (kind === "egg") {
+    // a small cardboard tray of eggs
+    g.add(mesh(box(0.56, 0.08, 0.4), 0xc9a77a, 0, 0.04, 0));
+    for (const [x, z] of [[-0.17, -0.09], [0, -0.09], [0.17, -0.09], [-0.17, 0.09], [0, 0.09], [0.17, 0.09]]) {
+      const e = mesh(sphere(0.075, 6), 0xfff6e6, x, 0.13, z, false);
+      e.scale.y = 1.3;
+      g.add(e);
+    }
+  } else if (kind === "milk") {
+    // a blue crate of milk bottles
+    g.add(mesh(box(0.56, 0.16, 0.4), 0x2f7fd0, 0, 0.08, 0));
+    for (const [x, z] of [[-0.14, -0.09], [0.14, -0.09], [-0.14, 0.09], [0.14, 0.09]]) {
+      g.add(mesh(cyl(0.07, 0.08, 0.14, 6), 0xffffff, x, 0.21, z, false));
+    }
+  } else if (kind === "cheese") {
+    const w = mesh(cyl(0.27, 0.27, 0.2, 10), 0xffc928, 0, 0.1, 0);
+    g.add(w);
+    g.add(mesh(cyl(0.28, 0.28, 0.06, 10), 0xe08a1e, 0, 0.1, 0, false));
   } else {
     const loaf = mesh(sphere(0.3, 7), COLORS.bread, 0, 0.13, 0);
     loaf.scale.set(1.1, 0.5, 0.75);
@@ -133,14 +151,14 @@ export function fieldTile(): THREE.Group {
   return g;
 }
 
-export function stall(): THREE.Group {
+export function stall(awning: number = COLORS.roofRed): THREE.Group {
   const g = new THREE.Group();
   g.add(mesh(box(3.2, 0.9, 1.2), COLORS.wood, 0, 0.45, 0));
   g.add(mesh(box(3.3, 0.08, 1.3), COLORS.woodDark, 0, 0.92, 0));
   for (const x of [-1.5, 1.5]) g.add(mesh(box(0.12, 2.2, 0.12), COLORS.woodDark, x, 1.1, 0.5));
   // striped awning
   for (let i = 0; i < 6; i++) {
-    const a = mesh(box(0.56, 0.08, 1.6), i % 2 ? COLORS.white : COLORS.roofRed, -1.4 + i * 0.56, 2.25, 0.25);
+    const a = mesh(box(0.56, 0.08, 1.6), i % 2 ? COLORS.white : awning, -1.4 + i * 0.56, 2.25, 0.25);
     a.rotation.x = -0.25;
     g.add(a);
   }
@@ -479,4 +497,69 @@ export function seedCrate(): THREE.Group {
     g.add(s);
   }
   return g;
+}
+
+// ---------------------------------------------------------------
+// Animal farm buildings
+// ---------------------------------------------------------------
+
+/** Hen house on stilts with a ramp. `spin` bobs while hens are laying. */
+export function coop(): { root: THREE.Group; hen: THREE.Object3D } {
+  const root = new THREE.Group();
+  for (const [x, z] of [[-1.1, -0.9], [1.1, -0.9], [-1.1, 0.9], [1.1, 0.9]]) root.add(mesh(box(0.16, 0.7, 0.16), COLORS.woodDark, x, 0.35, z));
+  root.add(mesh(box(2.6, 1.5, 2.2), 0xc0703a, 0, 1.45, 0));
+  for (let y = 0.9; y < 2.2; y += 0.3) root.add(mesh(box(2.64, 0.05, 2.24), 0xa35a2b, 0, y, 0, false));
+  const roofL = mesh(box(1.6, 0.14, 2.6), COLORS.roofRed, -0.65, 2.5, 0);
+  roofL.rotation.z = 0.55;
+  const roofR = mesh(box(1.6, 0.14, 2.6), COLORS.roofRed, 0.65, 2.5, 0);
+  roofR.rotation.z = -0.55;
+  root.add(roofL, roofR);
+  root.add(mesh(box(0.6, 0.6, 0.08), 0x3a2414, 0, 1.2, 1.12));
+  const ramp = mesh(box(0.55, 0.06, 1.3), COLORS.wood, 0, 0.45, 1.6);
+  ramp.rotation.x = 0.55;
+  root.add(ramp);
+  const hen = chicken();
+  hen.position.set(0, 0.95, 1.05);
+  hen.scale.setScalar(0.9);
+  root.add(hen);
+  return { root, hen };
+}
+
+/** Small open cow shed with a hay rack. */
+export function cowshed(): { root: THREE.Group; cow: THREE.Group } {
+  const root = new THREE.Group();
+  root.add(mesh(box(2.8, 0.1, 2.6), 0x8c7a5a, 0, 0.05, 0, false));
+  root.add(mesh(box(2.8, 2.0, 0.2), 0xb5452f, 0, 1.0, -1.2));
+  root.add(mesh(box(0.2, 2.0, 2.6), 0xb5452f, -1.3, 1.0, 0));
+  root.add(mesh(box(0.2, 2.0, 2.6), 0xb5452f, 1.3, 1.0, 0));
+  for (const x of [-1.3, 1.3]) root.add(mesh(box(0.22, 2.1, 0.22), COLORS.white, x, 1.05, 1.2));
+  const roof = mesh(box(3.2, 0.16, 3.2), 0x5d4037, 0, 2.25, 0);
+  roof.rotation.x = -0.18;
+  root.add(roof);
+  root.add(mesh(box(1.8, 0.5, 0.4), COLORS.wood, 0, 0.6, -0.85));
+  root.add(mesh(box(1.7, 0.2, 0.34), COLORS.wheat, 0, 0.9, -0.85, false));
+  const c = cow();
+  c.position.set(0, 0, 0.1);
+  c.rotation.y = Math.PI;
+  root.add(c);
+  return { root, cow: c };
+}
+
+/** White dairy with a blue roof and a churn that spins while working. */
+export function creamery(): { root: THREE.Group; churn: THREE.Object3D } {
+  const root = new THREE.Group();
+  root.add(mesh(box(3.0, 2.0, 2.4), 0xf4f1ea, 0, 1.0, 0));
+  const roof = mesh(cone(2.5, 1.2, 4), 0x2f7fd0, 0, 2.6, 0);
+  roof.rotation.y = Math.PI / 4;
+  roof.scale.set(1, 1, 0.8);
+  root.add(roof);
+  root.add(mesh(box(0.8, 1.2, 0.1), 0x2f7fd0, 0, 0.6, 1.21));
+  root.add(mesh(box(0.6, 0.5, 0.1), 0xbfe3ff, -0.95, 1.25, 1.21));
+  root.add(mesh(box(0.6, 0.5, 0.1), 0xbfe3ff, 0.95, 1.25, 1.21));
+  const churn = new THREE.Group();
+  churn.position.set(1.0, 3.0, 0);
+  churn.add(mesh(cyl(0.3, 0.35, 0.7, 8), 0xc9ced3, 0, 0, 0));
+  churn.add(mesh(box(0.7, 0.08, 0.08), COLORS.woodDark, 0, 0.42, 0, false));
+  root.add(churn);
+  return { root, churn };
 }
