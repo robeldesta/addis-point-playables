@@ -647,7 +647,7 @@ function makeMachine(id: string, name: string, tier: number, x: number, z: numbe
   const og = new THREE.Group(); og.position.set(x + ox, 0.1, z + oz); scene.add(og);
   const big = o.store ? 3 : 2;
   const m: Machine = {
-    id, name, tier, input: new Pile(ig, 2, 2).withLabel(1.9, STORE_CAPS[0]), output: new Pile(og, big, big, 0.62, 0.5).withLabel(1.9, STORE_CAPS[0]), center: V(x, 2, z),
+    id, name, tier, input: new Pile(ig, big, big, 0.62, 0.5).withLabel(1.9, STORE_CAPS[0]), output: new Pile(og, big, big, 0.62, 0.5).withLabel(1.9, STORE_CAPS[0]), center: V(x, 2, z),
     inZone: V(x + ix, 0, z + iz), outZone: V(x + ox, 0, z + oz), upPad: V(x + ux, 0, z + uz),
     from, to, secs, timer: 0, on: false, anim: () => {}, store: o.store, capMul: o.capMul ?? 1,
   };
@@ -661,7 +661,7 @@ const coopM = makeMachine("coop", "Hen coop", 3, 15, -5, "wheat", "egg", 1.6);
 const shedM = makeMachine("cowshed", "Cow shed", 4, 22, -5, "wheat", "milk", 2.2);
 const creamM = makeMachine("creamery", "Creamery", 6, 22, -12, "milk", "cheese", 2.0, { upDx: 3.6 });
 // General grain store: the harvester fills it, helpers take wheat from it to each building.
-const siloM = makeMachine("silo", "Grain silo", 2, -10.5, -14, "wheat", "wheat", 0.12, { inAt: [2.2, 0], outAt: [0, 2.4], upAt: [-2.4, 0], store: true, capMul: 3 });
+const siloM = makeMachine("silo", "Grain silo", 2, -0.6, -14.8, "wheat", "wheat", 0.12, { inAt: [2.2, 0], outAt: [0, 2.4], upAt: [-2.6, 0], store: true, capMul: 3 });
 const machines = [siloM, mill, bakeryM, coopM, shedM, creamM];
 
 function enableMachine(m: Machine) {
@@ -687,7 +687,9 @@ function applyCaps() {
 // Vehicles and helpers both carry things around
 // ------------------------------------------------------------------
 interface Carrier { load: Pile; timer: number }
-interface Vehicle extends Carrier { obj: THREE.Group; cap: number; speed: number; state: string; home: THREE.Vector3; think: (v: Vehicle, dt: number) => void }
+interface Vehicle extends Carrier { obj: THREE.Group; cap: number; speed: number; state: string; home: THREE.Vector3; think: (v: Vehicle, dt: number) => void; target?: Tile | null }
+/** Tiles another vehicle is already heading for, so a fleet spreads out instead of chasing the same spot. */
+const claimedByOther = (v: Vehicle, t: Tile) => vehicles.some((o) => o !== v && o.target === t);
 const vehicles: Vehicle[] = [];
 function moveTo(obj: THREE.Object3D, target: THREE.Vector3, speed: number, dt: number): boolean {
   const d = V(target.x - obj.position.x, 0, target.z - obj.position.z);
@@ -737,7 +739,8 @@ function nearestTile(from: THREE.Vector3, pred: (t: Tile) => boolean): Tile | nu
 let seedSpend = 0;
 /** Tractor: plants bare soil in every field, paying for each seed bag. */
 function tractorWorker(v: Vehicle, dt: number) {
-  const target = coins >= SEED_COST ? nearestTile(v.obj.position, (t) => t.growth < 0) : null;
+  const target = coins >= SEED_COST ? nearestTile(v.obj.position, (t) => t.growth < 0 && !claimedByOther(v, t)) : null;
+  v.target = target;
   if (!target) { moveTo(v.obj, v.home, vSpeed(v), dt); return; }
   if (moveTo(v.obj, target.pos, vSpeed(v), dt)) {
     coins -= SEED_COST;
@@ -756,11 +759,13 @@ function tractorWorker(v: Vehicle, dt: number) {
 function harvesterWorker(v: Vehicle, dt: number) {
   const dest = siloM.on ? { pos: siloM.inZone, pile: siloM.input } : mill.on ? { pos: mill.inZone, pile: mill.input } : { pos: stallC.sellZone, pile: stallC.shelf };
   if (v.state === "gather") {
-    const best = v.load.count < v.cap ? nearestTile(v.obj.position, (t) => t.growth >= 1) : null;
+    const best = v.load.count < v.cap ? nearestTile(v.obj.position, (t) => t.growth >= 1 && !claimedByOther(v, t)) : null;
+    v.target = best;
     if (!best) { v.state = v.load.count > 0 ? "deliver" : "home"; return; }
     if (moveTo(v.obj, best.pos, vSpeed(v), dt)) harvestInto(best, v.load);
     for (const t of tiles) if (t.growth >= 1 && v.load.count < v.cap && t.pos.distanceTo(v.obj.position) < 0.8) harvestInto(t, v.load);
   } else if (v.state === "deliver") {
+    v.target = null;
     if (moveTo(v.obj, dest.pos, vSpeed(v), dt) && unloadTick(v, dt, dest.pile)) v.state = "home";
   } else {
     // Only go out when there's ripe wheat and somewhere to put it.
@@ -809,6 +814,25 @@ function vanWorker(v: Vehicle, dt: number) {
     else moveTo(v.obj, v.home, vSpeed(v), dt);
   }
 }
+// Extra tractors and harvesters, bought from the purple pad by each garage.
+const FLEET = {
+  tractor: { name: "Tractor", garage: V(8.6, 0, -2), up: V(8.6, 0, 0.7), costs: [900, 1800, 3600], make: () => M.tractor(), cap: 8, speed: 3.2, think: tractorWorker },
+  harvester: { name: "Harvester", garage: V(8.6, 0, -9.6), up: V(8.6, 0, -12.3), costs: [1500, 3000, 6000], make: () => M.harvester(), cap: 12, speed: 3.0, think: harvesterWorker },
+};
+type FleetId = keyof typeof FLEET;
+function addFleetVehicle(id: FleetId, n: number) {
+  const f = FLEET[id];
+  addVehicle(f.make(), f.garage.clone().add(V(n % 2 ? 1.5 : -1.5, 0, n > 1 ? 1.2 : 0)), f.cap, f.speed, f.think);
+}
+function fleetRow(id: FleetId): Row {
+  const f = FLEET[id], key = id + ".n", l = L(key), max = l >= f.costs.length;
+  return {
+    key, title: `Buy another ${f.name.toLowerCase()}`,
+    detail: max ? `You have ${l + 1} (max)` : `You have ${l + 1} → ${l + 2}`,
+    cost: max ? null : f.costs[l],
+    buy: () => { lvl[key] = l + 1; addFleetVehicle(id, l + 1); },
+  };
+}
 function addVehicle(obj: THREE.Group, home: THREE.Vector3, cap: number, speed: number, think: Vehicle["think"]) {
   obj.position.copy(home);
   scene.add(obj);
@@ -849,7 +873,7 @@ const shelfEnd = (c: Counter): End => ({ pos: c.sellZone, pile: c.shelf });
 const outEnd = (m: Machine): End => ({ pos: m.outZone, pile: m.output });
 const inEnd = (m: Machine): End => ({ pos: m.inZone, pile: m.input });
 const HELPERS: HelperDef[] = [
-  { id: "h.millW", kind: "wheat", name: "Windmill feeder", owner: "silo", also: "mill", tier: 2, shirt: 0xc62828, home: V(-8.6, 0, -9.6), desc: "Carries wheat from the silo to the windmill", src: () => outEnd(siloM), dst: () => inEnd(mill) },
+  { id: "h.millW", kind: "wheat", name: "Windmill feeder", owner: "silo", also: "mill", tier: 2, shirt: 0xc62828, home: V(0.4, 0, -11.2), desc: "Carries wheat from the silo to the windmill", src: () => outEnd(siloM), dst: () => inEnd(mill) },
   { id: "h.wheat", kind: "wheat", name: "Wheat seller", owner: "stall", tier: 1, shirt: 0x7cb342, home: V(-2.6, 0, 1.2), desc: "Brings wheat (from the silo once built, else the field) to the market stall", src: () => (siloM.on ? outEnd(siloM) : "field"), dst: () => shelfEnd(stallC) },
   { id: "h.flourS", kind: "flour", name: "Flour seller", owner: "stall", tier: 2, shirt: 0x90a4ae, home: V(-2.6, 0, -0.4), desc: "Carries flour from the windmill to the market stall", src: () => outEnd(mill), dst: () => shelfEnd(stallC) },
   { id: "h.flour", kind: "flour", name: "Flour helper", owner: "bakery", tier: 2, shirt: 0x1e88e5, home: V(-1.8, 0, -7.6), desc: "Carries flour from the windmill to the bakery", src: () => outEnd(mill), dst: () => inEnd(bakeryM) },
@@ -927,7 +951,7 @@ const PADS: PadDef[] = [
   },
   { id: "basket", name: "Big basket", cost: 120, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 20); bag.cap = capacity; } },
   {
-    id: "well", name: "Water well", cost: 160, x: 0.4, z: -5.8, build: (a) => {
+    id: "well", name: "Water well", cost: 160, x: 0.4, z: -5.8, msg: "Watered crops grow back almost twice as fast!", build: (a) => {
       const w = M.well();
       w.root.position.set(0.4, 0, -5.8);
       scene.add(w.root);
@@ -969,6 +993,7 @@ const PADS: PadDef[] = [
     id: "tractor", name: "Tractor (plants)", cost: 700, x: 8.6, z: -2, build: () => {
       garage(8.6, -2);
       addVehicle(M.tractor(), V(8.6, 0, -2), 8, 3.2, tractorWorker);
+      addUpPad("tractor", "Tractors", FLEET.tractor.up);
     },
   },
   { id: "basket2", name: "Huge basket", cost: 900, x: 1.6, z: 4.6, build: () => { capacity = Math.max(capacity, 35); bag.cap = capacity; } },
@@ -987,13 +1012,13 @@ const PADS: PadDef[] = [
     },
   },
   {
-    id: "silo", name: "Grain silo", cost: 1400, x: -10.5, z: -14, msg: "The harvester now fills the silo. Hire a windmill feeder on the silo's purple pad!", build: (a) => {
+    id: "silo", name: "Grain silo", cost: 1400, x: -0.6, z: -14.8, msg: "The harvester now fills the silo. Hire a windmill feeder on the silo's purple pad!", build: (a) => {
       const g = M.silo();
-      g.position.set(-10.5, 0, -14);
+      g.position.set(-0.6, 0, -14.8);
       g.scale.setScalar(0.95);
       scene.add(g);
       if (a) popIn(g, 0);
-      solid(-10.5, -14, 2.2, 2.2);
+      solid(-0.6, -14.8, 2.2, 2.2);
       enableMachine(siloM);
     },
   },
@@ -1001,6 +1026,7 @@ const PADS: PadDef[] = [
     id: "harvester", name: "Harvester", cost: 1500, x: 8.6, z: -9.6, build: () => {
       garage(8.6, -9.6);
       addVehicle(M.harvester(), V(8.6, 0, -9.6), 12, 3.0, harvesterWorker);
+      addUpPad("harvester", "Harvesters", FLEET.harvester.up);
     },
   },
   { id: "field4", name: "West field", cost: 1800, x: -16, z: -2.5, msg: "More land! The tractor and harvester work it too.", build: (a) => makeField(4, -16, -2.5, a, -1) },
@@ -1030,7 +1056,7 @@ const PADS: PadDef[] = [
   },
   { id: "field6", name: "West field", cost: 4000, x: -22, z: -2.5, build: (a) => makeField(6, -22, -2.5, a, -1) },
   {
-    id: "dam", name: "Hydro dam", cost: 5000, x: 0, z: -15.4, build: (a) => {
+    id: "dam", name: "Hydro dam", cost: 5000, x: 6, z: -15.4, msg: "Power on! Buildings work 2x faster, crops grow faster, and vehicles and helpers move 30% faster.", build: (a) => {
       const d = M.dam();
       d.root.position.set(0, 0, -18.6);
       scene.add(d.root);
@@ -1126,6 +1152,7 @@ function helperRow(d: HelperDef): Row {
 }
 function rowsFor(owner: string): Row[] {
   const out: Row[] = [];
+  if (owner === "tractor" || owner === "harvester") out.push(fleetRow(owner));
   const m = machines.find((mm) => mm.id === owner);
   if (m) {
     const holds = (v: number) => `Holds ${v}`;
@@ -1692,6 +1719,7 @@ async function load() {
     Object.assign(paidSaved, d.paid ?? {});
     Object.assign(lvl, d.lvl ?? {});
     for (const p of PADS) if (d.built.includes(p.id)) { built.add(p.id); p.build(false); }
+    for (const id of ["tractor", "harvester"] as FleetId[]) if (built.has(id)) for (let n = 1; n <= L(id + ".n"); n++) addFleetVehicle(id, n);
     applyCaps();
     // Older saves may hold more than today's limits allow: trim to the caps.
     const fill = (src: Kind[] | undefined, pile: Pile) => (src ?? []).slice(0, pile.cap).forEach((k) => pile.add(k));
