@@ -21,11 +21,34 @@ export interface GNode {
   served: boolean; shedAt: number; shedBy: "" | "auto" | "player" | "island" | "capacity";
   demand: number; // MW right now (even when dark)
   df: number; // frequency deviation of this node's island, Hz
+  lost: boolean; // district now buys from the rival utility (no load, no revenue)
+  boost: number; // demand multiplier from incidents (match night, heatwave)
+  litMin: number; minutes: number; // reliability this day, for customer loyalty
 }
 
 export interface GLine {
   id: string; a: number; b: number; x: number; limit: number;
   closed: boolean; tripped: boolean; heat: number; flow: number; repair: number; trippedAt: number;
+  rating: number; // normal limit; heatwaves derate `limit` below this
+  hardened: boolean; // storm-proofed: lightning can't trip it
+  peak: number; // highest load fraction today
+}
+
+/** A scripted incident on today's forecast. */
+export interface Incident {
+  at: number; dur: number; done: 0 | 1 | 2; // 0 waiting, 1 active, 2 over
+  kind: "heat" | "spike" | "fuel" | "fault";
+  target?: string; mult?: number; text: string;
+}
+
+/** Money for the day. All $ amounts. */
+export interface Econ {
+  tariff: number; // what you charge, $/MWh
+  fuelPrice: number; // gas, $/MWh
+  hydroCost: number;
+  water: number; waterMax: number; inflow: number; // dam reservoir (MWh) and river inflow (MW) once it's empty
+  fineMWh: number; fineCritical: number;
+  rev: number; fuel: number; hydro: number; fines: number;
 }
 
 export interface GEvent { minute: number; text: string; kind: "trip" | "shed" | "storm" | "info" | "restore"; line?: string; node?: string }
@@ -42,6 +65,9 @@ export interface State {
   events: GEvent[];
   storm: Storm | null;
   randomFaults: boolean; // off in the first scenario so the lesson is the scripted strike
+  incidents: Incident[];
+  econ: Econ;
+  repairMin: number;
   stats: { demandMWh: number; servedMWh: number; weightedLost: number; trips: number; worstChain: number; minF: number };
   chain: { count: number; last: number };
   over: boolean;
@@ -82,10 +108,11 @@ type NodeSpec = Partial<GNode> & Pick<GNode, "id" | "name" | "kind" | "x" | "y">
 const N = (n: NodeSpec): GNode => ({
   cap: 0, ramp: 0, out: 0, set: 0, online: true, auto: false, soc: 0, socMax: 0,
   base: 0, profile: "flat", critical: false, priority: 5, served: true, shedAt: -1e9, shedBy: "", demand: 0, df: 0,
+  lost: false, boost: 1, litMin: 0, minutes: 0,
   ...n,
 });
 
-export function newCity(seed = (Date.now() ^ 0x2545f491) | 0): State {
+export function newCity(seed = (Date.now() ^ 0x2545f491) | 0, setup?: (s: State) => void): State {
   const nodes: GNode[] = [
     N({ id: "dam", name: "River Dam", kind: "hydro", x: 110, y: 880, cap: 250, ramp: 30, out: 170, set: 170, auto: true }),
     N({ id: "gas", name: "Gas Plant", kind: "gas", x: 610, y: 890, cap: 150, ramp: 15, out: 60, set: 60, auto: true }),
@@ -103,7 +130,7 @@ export function newCity(seed = (Date.now() ^ 0x2545f491) | 0): State {
   const L = (id: string, a: string, b: string, limit: number): GLine => {
     const A = nodes[ix(a)], B = nodes[ix(b)];
     const len = Math.hypot(A.x - B.x, A.y - B.y);
-    return { id, a: ix(a), b: ix(b), x: len / 1000, limit, closed: true, tripped: false, heat: 0, flow: 0, repair: 0, trippedAt: -1e9 };
+    return { id, a: ix(a), b: ix(b), x: len / 1000, limit, closed: true, tripped: false, heat: 0, flow: 0, repair: 0, trippedAt: -1e9, rating: limit, hardened: false, peak: 0 };
   };
   const lines: GLine[] = [
     L("L1", "dam", "subS", 150),
@@ -128,9 +155,14 @@ export function newCity(seed = (Date.now() ^ 0x2545f491) | 0): State {
     v: 1, seed, minute: start, start, end: 24 * 60 - 1, nodes, lines, events: [],
     storm: { start: 18 * 60 + 30, end: 19 * 60 + 30, target: "L1", hit: false, chance: 0.7 },
     randomFaults: false,
+    incidents: [], repairMin: REPAIR_MIN,
+    econ: { tariff: 120, fuelPrice: 110, hydroCost: 8, water: 1e9, waterMax: 1e9, inflow: 60, fineMWh: 250, fineCritical: 1500, rev: 0, fuel: 0, hydro: 0, fines: 0 },
     stats: { demandMWh: 0, servedMWh: 0, weightedLost: 0, trips: 0, worstChain: 0, minF: 50 },
     chain: { count: 0, last: -1e9 }, over: false, solveMs: 0,
   };
+  setup?.(s);
+  for (const l of s.lines) l.limit = l.rating;
+  s.minute = s.start;
   updateDemand(s);
   balanceAndSolve(s, false);
   return s;
@@ -152,12 +184,16 @@ export function profileAt(p: Profile, minute: number): number {
   const arr = PROFILES[p];
   return arr[a % 24] * (1 - f) + arr[(a + 1) % 24] * f;
 }
+/** Price response: customers use a bit less when power is expensive. */
+export const priceFactor = (tariff: number) => Math.pow(tariff / 120, -0.6);
 function updateDemand(s: State) {
-  for (const n of s.nodes) if (n.kind === "district") n.demand = n.base * profileAt(n.profile, s.minute) * (1 + 0.02 * Math.sin(s.minute / 7 + n.x));
+  const pf = priceFactor(s.econ.tariff);
+  for (const n of s.nodes) if (n.kind === "district") n.demand = n.lost ? 0 : n.base * n.boost * pf * profileAt(n.profile, s.minute) * (1 + 0.02 * Math.sin(s.minute / 7 + n.x));
 }
 /** Total demand expected at a future minute (forecast strip). */
 export function forecastDemand(s: State, minute: number): number {
-  return s.nodes.reduce((a, n) => a + (n.kind === "district" ? n.base * profileAt(n.profile, minute) : 0), 0);
+  const pf = priceFactor(s.econ.tariff);
+  return s.nodes.reduce((a, n) => a + (n.kind === "district" && !n.lost ? n.base * pf * profileAt(n.profile, minute) : 0), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +206,11 @@ export const isLive = (l: GLine) => l.closed && !l.tripped;
 const asFlow = (s: State, closed?: (l: GLine, i: number) => boolean): FlowLine[] =>
   s.lines.map((l, i) => ({ a: l.a, b: l.b, x: l.x, closed: closed ? closed(l, i) : isLive(l) }));
 
-function plantMax(n: GNode): number {
+let curEcon: Econ | null = null; // set during a tick so plantMax can see the reservoir
+export function plantMax(n: GNode, econ: Econ | null = curEcon): number {
   if (!n.online) return 0;
   if (n.kind === "battery") return n.soc > 0.5 ? n.cap : 0;
+  if (n.kind === "hydro" && econ && econ.water <= 0) return Math.min(n.cap, econ.inflow);
   return n.cap;
 }
 function plantMin(n: GNode): number {
@@ -186,7 +224,9 @@ function plantMin(n: GNode): number {
 
 export function tick(s: State) {
   if (s.over) return;
+  curEcon = s.econ;
   s.minute++;
+  incidents(s);
   updateDemand(s);
   weather(s);
   dispatch(s);
@@ -226,6 +266,7 @@ function dispatch(s: State) {
  * balance each island, solve flows. `dynamics` = advance frequency this call.
  */
 export function balanceAndSolve(s: State, dynamics: boolean) {
+  curEcon = s.econ;
   const t0 = typeof performance !== "undefined" ? performance.now() : 0;
   const fl = asFlow(s);
   const isl = islands(s.nodes.length, fl);
@@ -328,6 +369,24 @@ export function tripLine(s: State, l: GLine, why: string) {
   s.events.push({ minute: s.minute, kind: "trip", line: l.id, text: `${A} – ${B} line tripped: ${why}.` });
 }
 
+function incidents(s: State) {
+  for (const inc of s.incidents) {
+    if (inc.done === 0 && s.minute >= inc.at) {
+      inc.done = 1;
+      s.events.push({ minute: s.minute, kind: inc.kind === "fault" ? "trip" : "storm", text: inc.text, node: inc.kind === "spike" ? inc.target : undefined, line: inc.kind === "fault" ? inc.target : undefined });
+      if (inc.kind === "heat") { for (const n of s.nodes) if (n.kind === "district" && n.profile === "homes") n.boost *= inc.mult ?? 1.2; for (const l of s.lines) l.limit = Math.round(l.rating * 0.9); }
+      if (inc.kind === "spike") { const n = s.nodes.find((x) => x.id === inc.target); if (n) n.boost *= inc.mult ?? 1.4; }
+      if (inc.kind === "fuel") s.econ.fuelPrice = Math.round(s.econ.fuelPrice * (inc.mult ?? 1.8));
+      if (inc.kind === "fault") { const l = s.lines.find((x) => x.id === inc.target); if (l && isLive(l)) tripLine(s, l, "equipment failure"); }
+    } else if (inc.done === 1 && s.minute >= inc.at + inc.dur) {
+      inc.done = 2;
+      if (inc.kind === "heat") { for (const n of s.nodes) if (n.kind === "district" && n.profile === "homes") n.boost /= inc.mult ?? 1.2; for (const l of s.lines) l.limit = l.rating; }
+      if (inc.kind === "spike") { const n = s.nodes.find((x) => x.id === inc.target); if (n) n.boost /= inc.mult ?? 1.4; }
+      if (inc.kind === "fuel") s.econ.fuelPrice = Math.round(s.econ.fuelPrice / (inc.mult ?? 1.8));
+    }
+  }
+}
+
 function weather(s: State) {
   heatStep(s);
   const st = s.storm;
@@ -336,7 +395,8 @@ function weather(s: State) {
   if (st && stormy && !st.hit && s.minute === st.start + 12) {
     st.hit = true;
     const l = s.lines.find((x) => x.id === st.target);
-    if (l && isLive(l)) tripLine(s, l, "lightning strike");
+    if (l && isLive(l) && !l.hardened) tripLine(s, l, "lightning strike");
+    else if (l && l.hardened) s.events.push({ minute: s.minute, kind: "info", line: l.id, text: `Lightning hit ${s.nodes[l.a].name} – ${s.nodes[l.b].name}, but your storm-proofing held.` });
   }
   if (s.randomFaults) for (const l of s.lines) {
     if (!isLive(l)) continue;
@@ -366,7 +426,7 @@ function restore(s: State) {
     if (50 + df < 49.85) continue;
     // only plants on auto will pick up a restored district
     const head = plants.filter((p) => p.auto).reduce((a, p) => a + Math.max(0, plantMax(p) - p.out), 0);
-    const waiting = ns.filter((n) => n.kind === "district" && !n.served && n.shedBy !== "player" && s.minute - n.shedAt >= 5).sort((a, b) => b.priority - a.priority)[0];
+    const waiting = ns.filter((n) => n.kind === "district" && !n.lost && !n.served && n.shedBy !== "player" && s.minute - n.shedAt >= 5).sort((a, b) => b.priority - a.priority)[0];
     if (waiting && head > waiting.demand * 1.15) {
       waiting.served = true; waiting.shedBy = "";
       s.events.push({ minute: s.minute, kind: "restore", node: waiting.id, text: `${waiting.name} is back on.` });
@@ -381,7 +441,17 @@ function accounting(s: State) {
     s.stats.demandMWh += n.demand / 60;
     if (n.served) s.stats.servedMWh += n.demand / 60;
     else s.stats.weightedLost += (n.demand / 60) * (n.critical ? 10 : 1);
+    if (n.lost) continue;
+    n.minutes++;
+    if (n.served) { n.litMin++; s.econ.rev += (n.demand / 60) * s.econ.tariff; }
+    else s.econ.fines += (n.demand / 60) * (n.critical ? s.econ.fineCritical : s.econ.fineMWh);
   }
+  const e = s.econ;
+  for (const n of s.nodes) {
+    if (n.kind === "gas") e.fuel += (Math.max(0, n.out) / 60) * e.fuelPrice;
+    if (n.kind === "hydro") { e.hydro += (Math.max(0, n.out) / 60) * e.hydroCost; if (e.water < 1e8) e.water = Math.max(0, e.water - Math.max(0, n.out - e.inflow) / 60); }
+  }
+  for (const l of s.lines) l.peak = Math.max(l.peak, lineLoad(l));
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +470,7 @@ export function cutLine(s: State, id: string) {
 }
 export function repairLine(s: State, id: string) {
   const l = s.lines.find((x) => x.id === id);
-  if (l && l.tripped && l.repair === 0) l.repair = REPAIR_MIN;
+  if (l && l.tripped && l.repair === 0) l.repair = s.repairMin;
 }
 export function setPlant(s: State, id: string, mw: number) {
   const n = s.nodes.find((x) => x.id === id);
@@ -436,7 +506,7 @@ export function totals(s: State) {
   const demand = s.nodes.reduce((a, n) => a + (n.kind === "district" ? n.demand : 0), 0);
   const served = s.nodes.reduce((a, n) => a + load(n), 0);
   const gen = s.nodes.reduce((a, n) => a + (isPlant(n) ? n.out : 0), 0);
-  const capacity = s.nodes.reduce((a, n) => a + (isPlant(n) ? plantMax(n) : 0), 0);
+  const capacity = s.nodes.reduce((a, n) => a + (isPlant(n) ? plantMax(n, s.econ) : 0), 0);
   // frequency of the island serving the most load
   const isl = islands(s.nodes.length, asFlow(s));
   let best = isl[0], bestLoad = -1;

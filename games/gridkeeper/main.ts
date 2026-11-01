@@ -1,15 +1,18 @@
-// Lights On (code name Gridkeeper), prototype step 1.
-// A city grid you can watch, break, manipulate and stabilise.
+// Lights On (code name Gridkeeper), prototype step 2: the grid as a business.
+// A week running the city's power company: set your price, survive each evening, beat the rival.
 // The simulation lives in ./sim and never imports Phaser; this file only draws it and wires taps.
 import Phaser from "phaser";
 import * as G from "./sim/grid";
 import type { State, GNode, GLine } from "./sim/grid";
+import * as K from "./sim/campaign";
+import type { Campaign, DayReport } from "./sim/campaign";
 import { initPlatform, firstFrameReady, gameReady, onPause, onResume, loadSave, save, sendScore } from "../../src/platform/platform";
 
 const GAME_ID = "gridkeeper";
-const TICKS_PER_SEC = 2; // game minutes per real second at 1×  (a 8-hour shift ≈ 4 min at 1×, 1 min at 4×)
+const TICKS_PER_SEC = 3; // game minutes per real second at 1× (a 6-hour evening ≈ 2 min)
 
-let s: State = G.newCity();
+let camp: Campaign = K.newCampaign();
+let s: State = K.startDay(camp);
 let speed = 1;
 let paused = false; // platform pause
 let acc = 0;
@@ -18,7 +21,8 @@ let preview: number[] | null = null;
 let seenEvents = 0;
 let slowUntil = 0; // real ms: auto slow-motion after the first trip
 let firstTripSeen = false;
-let best = { stars: 0, served: 0 };
+let best = 0; // best week-end cash
+const money = (v: number) => (v < 0 ? "−$" : "$") + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(2) + "M" : Math.abs(v) >= 1e4 ? Math.round(Math.abs(v) / 1000) + "k" : Math.abs(v) >= 1e3 ? (Math.abs(v) / 1000).toFixed(1) + "k" : Math.round(Math.abs(v)).toLocaleString("en-US"));
 let started = false;
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -179,7 +183,12 @@ class GridScene extends Phaser.Scene {
       const ic = this.icons.get(n.id)!, lb = this.labels.get(n.id)!;
       const r = (n.kind === "sub" ? 14 : n.kind === "district" ? 24 : 26) * Math.max(0.75, k * 1.15);
       if (selected) { g.lineStyle(3, 0xffffff, 0.6); g.strokeCircle(x, y, r + 7); }
-      if (n.kind === "district") {
+      if (n.kind === "district" && n.lost) {
+        g.fillStyle(0x1b1030, 1); g.fillCircle(x, y, r);
+        g.lineStyle(2, 0xb388ff, 0.9); g.strokeCircle(x, y, r);
+        ic.setAlpha(0.45);
+        lb.setText(`${n.name}\nVolt Co customer`).setColor("#c7a6ff");
+      } else if (n.kind === "district") {
         if (n.served) {
           g.fillStyle(C.lamp, 0.10 + 0.03 * Math.sin(this.t * 2 + n.x)); g.fillCircle(x, y, r * 1.9);
           g.fillStyle(C.lamp, 0.22); g.fillCircle(x, y, r * 1.3);
@@ -285,7 +294,7 @@ function lineSheet(l: GLine): string {
     <div><span>Limit</span><b>${l.limit} MW</b></div></div>
     <div class="hint">Heat <b>${Math.round(l.heat)}/100</b>, ${fuse}</div><div class="bar"><i style="width:${l.heat}%;background:${l.heat > 66 ? "var(--hot)" : "var(--warm)"}"></i></div>`;
   if (l.tripped) {
-    html += `<div class="row">${l.repair > 0 ? `<span class="hint">Crew on the way. Meanwhile, move power off its neighbours.</span>` : `<button class="btn pri" data-act="repair">🔧 Send repair crew (${G.REPAIR_MIN} min)</button>`}</div>`;
+    html += `<div class="row">${l.repair > 0 ? `<span class="hint">Crew on the way. Meanwhile, move power off its neighbours.</span>` : `<button class="btn pri" data-act="repair">🔧 Send repair crew (${s.repairMin} min)</button>`}</div>`;
   } else {
     const worst = preview ? Math.max(...preview) : 0;
     const darkAfter = preview ? previewDarkens(l.id) : [];
@@ -307,21 +316,26 @@ function previewDarkens(id: string): string[] {
 
 function nodeSheet(n: GNode): string {
   if (G.isPlant(n)) {
-    const sub = n.kind === "hydro" ? "Cheap, fast to ramp, limited water" : n.kind === "gas" ? "Pricier, ramps slowly" : "Stores energy, instant response";
+    const e = s.econ;
+    const sub = n.kind === "hydro" ? `$${e.hydroCost}/MWh, fast ramp, limited water` : n.kind === "gas" ? `Fuel $${e.fuelPrice}/MWh, ramps slowly` : "Stores energy, instant response";
     let html = head(iconFor(n), n.name, sub) + `<div class="kv">
       <div><span>Output</span><b>${Math.round(n.out)} MW</b></div>
       <div><span>Target</span><b>${Math.round(n.set)} MW</b></div>
       <div><span>${n.kind === "battery" ? "Charge" : "Max"}</span><b>${n.kind === "battery" ? Math.round((100 * n.soc) / n.socMax) + "%" : n.cap + " MW"}</b></div></div>`;
     html += `<div class="row"><div class="step"><button data-act="dn10" aria-label="Lower">−</button><b>${Math.round(n.set)} MW</b><button data-act="up10" aria-label="Raise">+</button></div>
       <button class="toggle ${n.auto ? "on" : ""}" data-act="auto"><i></i>Auto follow demand</button></div>
+      ${n.kind === "hydro" ? `<div class="hint">Reservoir <b>${Math.round(e.water)}</b> of ${e.waterMax} MWh${e.water <= 0 ? ` · <b style="color:var(--hot)">empty: river gives only ${e.inflow} MW</b>` : ` · about <b>${(e.water / Math.max(1, n.out - e.inflow)).toFixed(1)} h</b> at this output`}</div><div class="bar"><i style="width:${(100 * e.water) / e.waterMax}%;background:var(--cool)"></i></div>` : ""}
+      ${n.kind === "gas" ? `<div class="hint">Burning <b>${money((n.out * e.fuelPrice) / 60)}</b> of fuel per minute. You sell power at <b>$${e.tariff}/MWh</b>.</div>` : ""}
       <div class="hint">${n.auto ? "On auto it follows city demand. Lower or raise it to take manual control, e.g. to keep a line from overloading." : `Manual: holds ${Math.round(n.set)} MW, ramping ${n.ramp} MW/min. Turn Auto back on when the danger passes.`}</div>`;
     return html;
   }
   if (n.kind === "sub") return head("◆", n.name, "Substation: power passes through here") + `<div class="hint">Substations join lines. Tap a line to see its load and breaker.</div>`;
+  if (n.lost) return head(iconFor(n), n.name, "Buys power from Volt Co") + `<div class="hint">They left you over price or blackouts. Win them back tomorrow morning: price below Volt Co ($${camp.rival.tariff}) by enough to beat the hassle of switching, and keep the lights on.</div>`;
   const why: Record<string, string> = { auto: "the grid shed it automatically to save frequency", player: "you switched it off", island: "it was cut off from every power plant", capacity: "there was not enough power" };
   let html = head(iconFor(n), n.name, `${n.profile === "homes" ? "Homes" : n.profile === "commerce" ? "Offices and shops" : n.profile === "market" ? "Market" : n.critical ? "Critical: never let it go dark" : "Round-the-clock load"}`) +
     `<div class="kv"><div><span>Demand</span><b>${Math.round(n.demand)} MW</b></div><div><span>Status</span><b style="color:${n.served ? "var(--lamp)" : "var(--hot)"}">${n.served ? "Lit" : "Dark"}</b></div><div><span>Priority</span><b>${n.critical ? "Top" : n.priority}</b></div></div>`;
   if (!n.served && n.shedBy) html += `<div class="hint">Dark because ${why[n.shedBy] ?? "of a fault"}.${n.shedBy !== "player" ? " It comes back by itself once there is room." : ""}</div>`;
+  html += `<div class="hint">Pays you <b>${money((n.demand * s.econ.tariff) / 60)}</b>/min. Dark costs a fine of <b>${money((n.demand * (n.critical ? s.econ.fineCritical : s.econ.fineMWh)) / 60)}</b>/min.</div>`;
   html += `<div class="row"><button class="btn ${n.served ? "hot" : "pri"}" data-act="district">${n.served ? "Switch off (rolling blackout)" : "Switch back on"}</button></div>`;
   if (n.served) html += `<div class="hint">Switching a small district off on purpose can save a line from tripping and taking out more.</div>`;
   return html;
@@ -399,6 +413,13 @@ function renderHud() {
   ($("hzbar") as HTMLElement).style.background = hz < 49.5 || hz > 50.5 ? "var(--hot)" : hz < 49.85 || hz > 50.15 ? "var(--warm)" : "var(--good)";
   const pct = G.servedPct(s) * 100;
   $("served").textContent = (pct >= 99.95 ? "100" : pct.toFixed(1)) + "%";
+  const e = s.econ;
+  const today = e.rev - e.fuel - e.hydro - e.fines;
+  $("cash").textContent = money(camp.cash + today);
+  const rate = (() => { let r = 0; for (const n of s.nodes) { if (n.kind === "district" && !n.lost) r += n.served ? n.demand * e.tariff : -n.demand * (n.critical ? e.fineCritical : e.fineMWh); if (n.kind === "gas") r -= n.out * e.fuelPrice; if (n.kind === "hydro") r -= n.out * e.hydroCost; } return r / 60; })();
+  const cr = $("cashrate");
+  cr.textContent = (rate >= 0 ? "+" : "−") + money(Math.abs(rate)).replace(/^[−$]+/, "$") + "/min";
+  cr.style.color = rate >= 0 ? "var(--good)" : "var(--hot)";
   const dark = s.nodes.filter((n) => n.kind === "district" && !n.served).length;
   $("sub").textContent = dark ? `${dark} district${dark > 1 ? "s" : ""} dark` : s.over ? "Shift over" : "Evening shift";
 
@@ -411,7 +432,11 @@ function renderHud() {
     if (s.minute < st.start) stormTxt = ` · <span class="storm">⛈ storm ${G.fmtTime(st.start)}, near ${s.nodes[s.lines.find((l) => l.id === st.target)!.a].name}</span>`;
     else if (s.minute <= st.end) stormTxt = ` · <span class="storm">⛈ storm until ${G.fmtTime(st.end)}</span>`;
   }
-  $("forecast").innerHTML = `Demand <b>${Math.round(tot.served)} MW</b> · peak <b>${Math.round(peak)} MW</b> at ${G.fmtTime(peakAt)} · plants <b>${Math.round(tot.capacity)} MW</b>${stormTxt}`;
+  const next = s.incidents.find((i) => i.done === 0);
+  const water = e.waterMax < 1e8 ? ` · 💧 <b>${Math.round((100 * e.water) / e.waterMax)}%</b>` : "";
+  if (next && !s.over) stormTxt += ` · <span class="storm">next: ${G.fmtTime(next.at)} ${next.kind === "spike" ? "demand spike" : next.kind === "heat" ? "heatwave" : next.kind === "fuel" ? "gas price" : "fault risk"}</span>`;
+  $("forecast").innerHTML = `Day ${camp.day} · $${e.tariff}/MWh${water} · demand`;
+  $("forecast").innerHTML += ` <b>${Math.round(tot.served)} MW</b> · peak <b>${Math.round(peak)}</b> at ${G.fmtTime(peakAt)}${stormTxt}`;
 
   // alert pill: hottest live line
   const hot = [...s.lines].filter((l) => G.isLive(l) && (G.lineLoad(l) > 1 || l.heat > 30)).sort((a, b) => b.heat - a.heat)[0];
@@ -434,58 +459,118 @@ document.querySelectorAll<HTMLButtonElement>("#speed button").forEach((b) =>
 );
 
 // ---------------------------------------------------------------------------
-// Intro and end of day
+// Morning planning, end of day, end of week
 
-function intro() {
+const modalActs: Record<string, () => void> = {};
+$("modal").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+  if (b && !b.hasAttribute("disabled")) modalActs[b.dataset.act!]?.();
+});
+
+function nightRevenue(tariff: number): number {
+  const pf = G.priceFactor(tariff);
+  let mwh = 0;
+  for (let m = K.START; m < K.END; m += 10) for (const n of s.nodes) if (n.kind === "district" && !camp.lost.includes(n.id)) mwh += (n.base * pf * G.profileAt(n.profile, m) * 10) / 60;
+  return mwh * tariff;
+}
+
+function lineName(id: string) { const l = s.lines.find((x) => x.id === id)!; return `${s.nodes[l.a].name} – ${s.nodes[l.b].name}`; }
+
+function reportHtml(r: DayReport): string {
+  const row = (k: string, v: number, cls = "") => `<div class="pl ${cls}"><span>${k}</span><b>${v < 0 ? "−" : ""}${money(Math.abs(v)).replace(/^[−]/, "")}</b></div>`;
+  return `<div class="stars">${[0, 1, 2].map((i) => `<span class="${i < r.stars ? "" : "off"}">⭐</span>`).join("")}</div>
+    <div class="plbox">${row("Power sold at $" + r.tariff, r.rev)}${row("Gas fuel", -r.fuel)}${row("Dam water", -r.hydro)}${row("Blackout fines", -r.fines, r.fines > 0 ? "bad" : "")}${row("Staff, loans, upkeep", -r.fixed)}${row("Profit", r.profit, r.profit >= 0 ? "good total" : "bad total")}</div>
+    <p>Lights on ${(r.served * 100).toFixed(1)}% of the evening.</p>
+    ${r.news.length ? `<ul class="news">${r.news.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : `<p>No customers moved. Volt Co held at $${camp.rival.tariff}.</p>`}`;
+}
+
+function morning(report?: DayReport) {
+  started = false;
   const m = $("modal");
   m.className = "on";
+  const c = camp, p = c.plan;
+  const firstTime = c.day === 1 && !c.history.length;
+  const diff = c.tariff - c.rival.tariff;
+  const risk = diff >= 10 ? `<b style="color:var(--hot)">Expect customers to leave.</b>` : diff >= 5 ? `<b style="color:var(--warm)">Some customers may leave.</b>` : diff <= -10 ? `<b style="color:var(--good)">You may win customers back</b>, but Volt Co may start a price war.` : "Close to Volt Co: customers stay put unless the lights go out.";
+  const inc = p.incidents.map((i) => `<li><b>${G.fmtTime(i.at)}</b> ${esc(i.text)}</li>`).join("");
+  const storm = p.stormTarget ? `<li><b>${G.fmtTime(p.stormAt)}</b> ⛈ Storm. Lightning likely on ${esc(lineName(p.stormTarget))}${c.hardened.includes(p.stormTarget) ? " (storm-proofed ✓)" : ""}.</li>` : "";
+  const shop = K.UPGRADES.map((u) => {
+    const owned = u.once && c.owned.includes(u.id);
+    const can = K.canBuy(c, u.id);
+    const detail = u.id === "reinforce" ? `+40 MW on ${lineName(c.busiest)}` : u.id === "storm" ? (p.stormTarget ? `Protect ${lineName(p.stormTarget)} from tonight's storm` : "No storm tonight") : u.text;
+    return `<button class="shopi ${owned ? "own" : ""}" data-act="buy:${u.id}" ${can ? "" : "disabled"}><span><b>${u.name}</b><small>${esc(detail)}${u.upkeep ? ` · upkeep ${money(u.upkeep)}/day` : ""}</small></span><em>${owned ? "Owned" : money(u.cost)}</em></button>`;
+  }).join("");
   m.innerHTML = `<div class="card">
-    <h1>Lights <i>On</i></h1>
-    <p>You run the power grid of a hill city. Tonight's shift: <b style="color:var(--text)">16:00 to midnight</b>. A storm rolls in at 18:30.</p>
-    <ul>
-      <li><b>Lines glow</b> blue when calm, amber when busy, <b style="color:var(--hot)">red</b> when overloaded. An overloaded line heats up and trips.</li>
-      <li>When one line trips, its power <b>shifts onto the others</b>. That is how blackouts spread.</li>
-      <li><b>Tap a line</b> to open its breaker (the map previews the result). <b>Tap a plant</b> to raise or lower it.</li>
-      <li>Keep the <b>Hospital</b> lit and the grid near <b>50 Hz</b>.</li>
-    </ul>
-    ${best.stars ? `<p>Your best: ${"★".repeat(best.stars)}${"☆".repeat(3 - best.stars)} (${best.served.toFixed(1)}% lit)</p>` : ""}
-    <button class="btn pri" data-act="start">Start the shift</button></div>`;
-  m.querySelector("[data-act=start]")!.addEventListener("click", () => {
-    m.className = "";
-    started = true;
-    toast("Calm for now. Watch the line near the River Dam when the storm arrives.", "info", 6000);
-  });
+    ${firstTime ? `<h1>Lights <i>On</i></h1>
+      <p>You run the power company of a hill city for <b style="color:var(--text)">one week</b>. Every evening, keep the lights on and make money. A rival, <b style="color:#c7a6ff">Volt Co</b>, wants your customers.</p>
+      <ul><li><b>You earn</b> on every MWh you deliver, at the price you set. <b>You pay</b> for gas, dam water, staff, and big fines for blackouts.</li>
+      <li><b>Lines glow</b> blue, amber, then <b style="color:var(--hot)">red</b> when overloaded. Red lines heat up and trip, and their power jumps onto the next line. That's how blackouts spread.</li>
+      <li><b>Tap a plant</b> to raise or lower it, <b>tap a line</b> to see what opening its breaker would do.</li></ul>`
+    : report ? `<h2>Day ${report.day} results</h2>${reportHtml(report)}` : `<h2>Day ${c.day}</h2>`}
+    <div class="sec"><h3>Cash <span class="${c.cash < 0 ? "neg" : ""}">${money(c.cash)}</span></h3><small>Day ${c.day} of ${K.DAYS}. Fixed costs ${money(K.FIXED_COST + K.upkeep(c))} a day. Go below ${money(K.BANKRUPT)} and the bank takes over.</small></div>
+    <div class="sec"><h3>Your price tonight</h3>
+      <div class="row"><div class="step"><button data-act="pdn" aria-label="Lower price">−</button><b>$${c.tariff}</b><button data-act="pup" aria-label="Raise price">+</button></div>
+      <span class="hint" style="margin:0">per MWh · Volt Co <b style="color:#c7a6ff">$${c.rival.tariff}</b></span></div>
+      <div class="hint">If all goes well: about <b>${money(nightRevenue(c.tariff))}</b> in sales tonight. Higher prices earn more per MWh, but people use less. ${risk}</div>
+      ${c.lost.length ? `<div class="hint">Lost to Volt Co: <b style="color:#c7a6ff">${c.lost.map((id) => s.nodes.find((n) => n.id === id)!.name).join(", ")}</b></div>` : ""}</div>
+    <div class="sec"><h3>Tonight's forecast</h3><ul class="fc">
+      <li>💧 Dam reservoir <b>${p.water} MWh</b>${p.water < 1200 ? ` <b style="color:var(--warm)">(dry, it may run out)</b>` : ""} · 🔥 gas <b>$${p.fuelPrice}/MWh</b></li>${storm}${inc}</ul></div>
+    <div class="sec"><h3>Invest</h3><div class="shop">${shop}</div></div>
+    <button class="btn pri" data-act="go">Start the evening (17:00)</button></div>`;
+  modalActs.pdn = () => { camp.tariff = Math.max(K.TARIFF_MIN, camp.tariff - 5); refreshMorning(report); };
+  modalActs.pup = () => { camp.tariff = Math.min(K.TARIFF_MAX, camp.tariff + 5); refreshMorning(report); };
+  for (const u of K.UPGRADES) modalActs["buy:" + u.id] = () => { if (K.buy(camp, u.id)) { void persist(); refreshMorning(report); } };
+  modalActs.go = () => startEvening();
+}
+function refreshMorning(report?: DayReport) {
+  const card = $("modal").querySelector(".card");
+  const y = card?.scrollTop ?? 0;
+  morning(report);
+  const c2 = $("modal").querySelector(".card");
+  if (c2) c2.scrollTop = y;
+}
+
+function startEvening() {
+  s = K.startDay(camp);
+  seenEvents = 0; sel = null; preview = null; acc = 0;
+  $("modal").className = "";
+  renderSheet(true);
+  renderHud();
+  started = true;
+  void persist();
+  const p = camp.plan;
+  toast(camp.day === 1 && !firstTripSeen ? "Evening rush is starting. A storm is coming for the line near the River Dam." : p.stormTarget ? `Storm expected at ${G.fmtTime(p.stormAt)}. Watch ${lineName(p.stormTarget)}.` : "Evening rush is starting.", "info", 5000);
 }
 
 function endOfDay() {
   if ($("modal").classList.contains("on")) return;
-  const served = G.servedPct(s) * 100;
-  const hospDark = s.events.some((e) => e.kind === "shed" && e.node === "hosp");
-  const stars = [served >= 99, !hospDark && s.stats.worstChain <= 3, s.stats.minF >= G.UFLS_HZ];
-  const n = stars.filter(Boolean).length;
-  if (n > best.stars || (n === best.stars && served > best.served)) { best = { stars: n, served }; void save(GAME_ID, JSON.stringify(best)); sendScore(n * 1000 + Math.round(served * 10)); }
+  started = false;
+  const rep = K.endDay(camp, s);
+  void persist();
+  if (camp.over) return endOfWeek(rep);
+  morning(rep);
+}
+
+function endOfWeek(rep: DayReport) {
   const m = $("modal");
   m.className = "on";
-  const log = s.events.filter((e) => e.kind !== "info").slice(-30).reverse().map((e) => `<div><b>${G.fmtTime(e.minute)}</b> ${esc(e.text)}</div>`).join("");
+  const c = camp;
+  const final = Math.round(c.cash);
+  const newBest = final > best;
+  if (newBest) { best = final; sendScore(Math.max(0, final / 1000)); }
+  const kept = s.nodes.filter((n) => n.kind === "district" && !c.lost.includes(n.id)).length;
+  const totalStars = c.history.reduce((a, r) => a + r.stars, 0);
   m.innerHTML = `<div class="card">
-    <h2>Shift over</h2>
-    <div class="stars">${stars.map((ok) => `<span class="${ok ? "" : "off"}">⭐</span>`).join("")}</div>
-    <ul>
-      <li>${stars[0] ? "⭐" : "☆"} <b>Lights on ${served.toFixed(1)}%</b> of the energy the city wanted (need 99%)</li>
-      <li>${stars[1] ? "⭐" : "☆"} <b>Safety:</b> hospital ${hospDark ? "went dark" : "stayed lit"}, worst chain of trips ${s.stats.worstChain} (need ≤ 3)</li>
-      <li>${stars[2] ? "⭐" : "☆"} <b>Frequency</b> lowest ${s.stats.minF.toFixed(2)} Hz (need ≥ ${G.UFLS_HZ})</li>
-    </ul>
-    <p>${n === 3 ? "A perfect shift. The city never noticed you were there." : "Tip: when a line trips, find the line that turned red and take power off it, by lowering the plant that feeds it or opening a breaker."}</p>
-    <div class="log">${log || "<div>A quiet night.</div>"}</div>
-    <button class="btn pri" data-act="retry">Play the shift again</button></div>`;
-  m.querySelector("[data-act=retry]")!.addEventListener("click", () => {
-    s = G.newCity();
-    seenEvents = 0; firstTripSeen = false; sel = null; preview = null; acc = 0;
-    m.className = "";
-    renderSheet(true);
-    renderHud();
-    toast("Same city, same storm. Try to beat it.", "info");
-  });
+    <h2>Day ${rep.day} results</h2>${reportHtml(rep)}
+    <div class="sec"><h1>${c.bankrupt ? "The bank took over" : "Week over"}</h1>
+    <p>${c.bankrupt ? "Cash ran too low. Fines and fuel ate the company." : `You finished with <b style="color:var(--text)">${money(final)}</b>${newBest ? " (new best!)" : best ? ` (best ${money(best)})` : ""}.`}</p>
+    <ul><li><b>${kept}</b> of 6 districts still your customers</li><li><b>${totalStars}</b> of ${c.history.length * 3} stars for reliability</li><li>Volt Co ended at <b>$${c.rival.tariff}</b>/MWh</li></ul></div>
+    <button class="btn pri" data-act="again">Play a new week</button></div>`;
+  modalActs.again = () => { camp = K.newCampaign(); s = K.startDay(camp); firstTripSeen = false; void persist(); morning(); };
+}
+
+async function persist() {
+  await save(GAME_ID, JSON.stringify({ camp, best }));
 }
 
 // ---------------------------------------------------------------------------
@@ -507,10 +592,15 @@ const game = new Phaser.Game({
 
 renderHud();
 loadSave(GAME_ID).then((raw) => {
-  try { const b = JSON.parse(raw); if (b && typeof b.stars === "number") best = b; } catch { /* no save */ }
-  intro();
+  try {
+    const d = JSON.parse(raw);
+    if (d && typeof d.best === "number") best = d.best;
+    if (d?.camp?.v === 2 && !d.camp.over) { camp = d.camp; s = K.startDay(camp); firstTripSeen = camp.day > 1; }
+  } catch { /* no save */ }
+  renderHud();
+  morning();
   gameReady();
 });
 
 // test hook: ?debug exposes the state
-if (location.search.includes("debug")) (window as unknown as { gk: unknown }).gk = { get s() { return s; }, G, setSpeed: (v: number) => (speed = v) };
+if (location.search.includes("debug")) (window as unknown as { gk: unknown }).gk = { get s() { return s; }, get camp() { return camp; }, G, K, setSpeed: (v: number) => (speed = v) };
