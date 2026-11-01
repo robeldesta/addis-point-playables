@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Lights On (prototype)</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="game"></div>
+    <header id="top">
+      <div class="clock"><b id="time">16:00</b><small id="sub">Evening shift</small></div>
+      <div class="meter" id="hzbox"><span>Grid</span><b id="hz">50.00 Hz</b><i><em id="hzbar"></em></i></div>
+      <div class="meter"><span>Lights on</span><b id="served">100%</b></div>
+    </header>
+    <div id="forecast"></div>
+    <div id="toast"></div>
+    <button id="alert" class="hidden">⚠ <span id="alertText"></span></button>
+    <div id="speed">
+      <button data-speed="0" title="Pause">❚❚</button>
+      <button data-speed="1" class="on">1×</button>
+      <button data-speed="2">2×</button>
+      <button data-speed="4">4×</button>
+    </div>
+    <section id="sheet"></section>
+    <div id="modal"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
