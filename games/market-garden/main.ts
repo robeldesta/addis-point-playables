@@ -842,14 +842,14 @@ function walkAnim(obj: THREE.Object3D, moving: boolean) {
 /** Hired farmhands. Each one runs a single route; you pay to make them faster and stronger. */
 interface End { pos: THREE.Vector3; pile: Pile }
 interface HelperDef {
-  id: string; name: string; owner: string; tier: number; shirt: number; home: THREE.Vector3; desc: string; kind: Kind;
+  id: string; name: string; owner: string; also?: string; tier: number; shirt: number; home: THREE.Vector3; desc: string; kind: Kind;
   src: () => End | "field"; dst: () => End;
 }
 const shelfEnd = (c: Counter): End => ({ pos: c.sellZone, pile: c.shelf });
 const outEnd = (m: Machine): End => ({ pos: m.outZone, pile: m.output });
 const inEnd = (m: Machine): End => ({ pos: m.inZone, pile: m.input });
 const HELPERS: HelperDef[] = [
-  { id: "h.millW", kind: "wheat", name: "Windmill feeder", owner: "silo", tier: 2, shirt: 0xc62828, home: V(-8.6, 0, -9.6), desc: "Carries wheat from the silo to the windmill", src: () => outEnd(siloM), dst: () => inEnd(mill) },
+  { id: "h.millW", kind: "wheat", name: "Windmill feeder", owner: "silo", also: "mill", tier: 2, shirt: 0xc62828, home: V(-8.6, 0, -9.6), desc: "Carries wheat from the silo to the windmill", src: () => outEnd(siloM), dst: () => inEnd(mill) },
   { id: "h.wheat", kind: "wheat", name: "Wheat seller", owner: "stall", tier: 1, shirt: 0x7cb342, home: V(-2.6, 0, 1.2), desc: "Brings wheat (from the silo once built, else the field) to the market stall", src: () => (siloM.on ? outEnd(siloM) : "field"), dst: () => shelfEnd(stallC) },
   { id: "h.flourS", kind: "flour", name: "Flour seller", owner: "stall", tier: 2, shirt: 0x90a4ae, home: V(-2.6, 0, -0.4), desc: "Carries flour from the windmill to the market stall", src: () => outEnd(mill), dst: () => shelfEnd(stallC) },
   { id: "h.flour", kind: "flour", name: "Flour helper", owner: "bakery", tier: 2, shirt: 0x1e88e5, home: V(-1.8, 0, -7.6), desc: "Carries flour from the windmill to the bakery", src: () => outEnd(mill), dst: () => inEnd(bakeryM) },
@@ -987,7 +987,7 @@ const PADS: PadDef[] = [
     },
   },
   {
-    id: "silo", name: "Grain silo", cost: 1400, x: -10.5, z: -14, msg: "The harvester now fills the silo. Hire helpers to carry wheat from it!", build: (a) => {
+    id: "silo", name: "Grain silo", cost: 1400, x: -10.5, z: -14, msg: "The harvester now fills the silo. Hire a windmill feeder on the silo's purple pad!", build: (a) => {
       const g = M.silo();
       g.position.set(-10.5, 0, -14);
       g.scale.setScalar(0.95);
@@ -1107,7 +1107,8 @@ function levelRow(key: string, title: string, caps: number[], costs: number[], t
 }
 /** A helper can be hired once the building it takes from exists. */
 function helperReady(d: HelperDef) {
-  if (d.id === "h.flourS" || d.id === "h.millW") return mill.on;
+  if (d.id === "h.flourS") return mill.on;
+  if (d.id === "h.millW") return mill.on && siloM.on;
   if (d.id === "h.milkS") return shedM.on;
   return true;
 }
@@ -1143,7 +1144,8 @@ function rowsFor(owner: string): Row[] {
     const n = c.kinds().length;
     out.push(levelRow(c.id + ".shelf", "Counter space", SHELF_CAPS, SHELF_COST, c.tier, (v) => (n > 1 ? `${Math.floor(v / n)} of each` : `Holds ${v}`)));
   }
-  for (const d of HELPERS) if (d.owner === owner && helperReady(d)) out.push(helperRow(d));
+  // Some helpers can be hired from either end of their route.
+  for (const d of HELPERS) if ((d.owner === owner || d.also === owner) && helperReady(d)) out.push(helperRow(d));
   return out;
 }
 function renderPanel() {
