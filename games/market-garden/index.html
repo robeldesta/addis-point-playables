@@ -25,6 +25,10 @@
         box-shadow: 0 4px 0 rgba(0,0,0,.18); opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none;
         white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; z-index: 2; }
       #hint.show { opacity: 1; transform: translateX(-50%); }
+      #event { position: fixed; left: 12px; top: calc(max(12px, env(safe-area-inset-top)) + 112px); background: rgba(183, 28, 28, 0.88);
+        color: #fff; font-weight: 800; font-size: 15px; line-height: 1.5; padding: 6px 12px; border-radius: 12px; pointer-events: none;
+        opacity: 0; transition: opacity .2s; z-index: 2; max-width: calc(100vw - 48px); }
+      #event.show { opacity: 1; }
       #toast { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%) scale(.9); background: rgba(40,28,20,.88);
         color: #ffe9a8; font-weight: 800; font-size: 22px; padding: 12px 22px; border-radius: 16px; opacity: 0;
         transition: opacity .2s, transform .2s; pointer-events: none; text-align: center; max-width: calc(100vw - 32px); z-index: 5; }
@@ -60,6 +64,7 @@
       <div class="pill"><span class="basket"></span><span id="bag">0/10</span></div>
     </div>
     <div id="hint"></div>
+    <div id="event"></div>
     <div id="toast"></div>
     <div id="panel"><div id="ptitle"></div><div id="prows"></div><div class="pnote">Press and hold a price to buy. Walk off the pad to close.</div></div>
     <div id="joy"><div id="knob"></div></div>
