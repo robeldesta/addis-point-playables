@@ -1286,7 +1286,7 @@ function pickDemand(c: Counter): { kind: Kind; want: number } {
   for (const [k, w] of options) {
     if ((r -= w) <= 0) { kind = k; break; }
   }
-  return { kind, want: 1 + Math.floor(Math.random() * maxWant) };
+  return { kind, want: 1 + Math.floor(Math.random() * (maxWant + extraWant())) };
 }
 
 function updateCounter(c: Counter, dt: number) {
@@ -1295,7 +1295,7 @@ function updateCounter(c: Counter, dt: number) {
   const waiting = c.customers.filter((cu) => cu.state === "walk").length;
   // A long line puts people off: no new shoppers join when it's full.
   if (c.spawnTimer <= 0 && waiting < 6) {
-    c.spawnTimer = (c.every() / ratingRate(c.rating)) * (0.7 + Math.random() * 0.6);
+    c.spawnTimer = (c.every() / ratingRate(c.rating) / demandMul(c)) * (0.7 + Math.random() * 0.6);
     const obj = M.person(SHIRTS[Math.floor(Math.random() * SHIRTS.length)]);
     obj.position.set(spawnX(c), 0, ROAD_Z);
     scene.add(obj);
@@ -1306,7 +1306,7 @@ function updateCounter(c: Counter, dt: number) {
     hg.position.set(0, 0.9, 0.38);
     obj.add(hg);
     const d = pickDemand(c);
-    const maxPatience = 26 + d.want * 4;
+    const maxPatience = (26 + d.want * 4) * patienceMul();
     c.customers.push({ obj, state: "walk", kind: d.kind, want: d.want, got: 0, paid: 0, road: true, age: 0, timer: 0, patience: maxPatience, maxPatience, waited: 0, angry: false, bubble, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
   }
   let queueIdx = 0;
@@ -1602,7 +1602,246 @@ function updatePlayer(dt: number) {
   if (onUp && onUp !== panelOwner) openPanel(onUp);
   else if (!onUp && panelOwner && !upPads.some((u) => u.owner === panelOwner && near(u.pos, 1.3))) closePanel();
 
+  if (eventZones(dt, tick)) { dropTimer = 0.06; sfx.tick(); }
+
   for (const key of [...dwell.keys()]) if (!seenZones.has(key)) dwell.delete(key);
+}
+
+// ------------------------------------------------------------------
+// Pressure: demand grows as you earn, rush hours, crows, breakdowns and
+// wholesale orders keep the farm from ever running on autopilot.
+// ------------------------------------------------------------------
+/** 0 at the start, +1 each time lifetime earnings roughly double (max 8). */
+const demandLevel = () => Math.min(8, Math.floor(Math.log2(1 + lifetime / 800)));
+let shownLevel = -1;
+/** Shoppers arrive faster at higher demand levels, and 3x faster during a rush. */
+const demandMul = (c: Counter) => (1 + 0.15 * demandLevel()) * (rush && rush.c === c ? 3 : 1);
+const extraWant = () => Math.floor(demandLevel() / 2);
+const patienceMul = () => Math.max(0.6, 1 - 0.05 * demandLevel());
+
+const eventEl = $("event");
+let rush: { c: Counter; left: number } | null = null;
+let rushTimer = 120, crowTimer = 70, breakTimer = 100, orderTimer = 40;
+const rand = (a: number, b: number) => a + Math.random() * (b - a);
+const pick = <T>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+const fieldName = (f: number) => (f <= 2 ? "main field" : f === 3 ? "feed field" : "west field");
+
+// ---- crows ----
+const crowMat = M.mat(0x26262e);
+function crowMesh() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 7, 5), crowMat);
+  body.scale.set(0.9, 0.8, 1.4);
+  body.position.y = 0.22;
+  g.add(body);
+  g.add(M.mesh(new THREE.SphereGeometry(0.12, 6, 4), 0x26262e, 0, 0.38, 0.22, false));
+  g.add(M.mesh(new THREE.ConeGeometry(0.05, 0.16, 4), 0xffa000, 0, 0.37, 0.38, false).rotateX(Math.PI / 2));
+  for (const s of [-1, 1]) {
+    const w = M.mesh(new THREE.BoxGeometry(0.34, 0.03, 0.22), 0x26262e, s * 0.24, 0.3, 0, false);
+    w.name = "wing";
+    g.add(w);
+  }
+  return g;
+}
+interface Crow { obj: THREE.Group; tile: Tile | null; eat: number; flee: boolean }
+const crows: Crow[] = [];
+let crowField = 0, crowLife = 0;
+function spawnCrows() {
+  // land on the field with the most ripe wheat
+  const ripe = new Map<number, number>();
+  for (const t of tiles) if (t.growth >= 1) ripe.set(t.field, (ripe.get(t.field) ?? 0) + 1);
+  const best = [...ripe.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!best || best[1] < 4) return false;
+  crowField = best[0];
+  crowLife = 50;
+  const n = 4 + demandLevel();
+  for (let i = 0; i < n; i++) {
+    const obj = crowMesh();
+    obj.position.set(playerPos().x + rand(-18, 18), 8, playerPos().z - 16);
+    scene.add(obj);
+    crows.push({ obj, tile: null, eat: rand(2, 3.5), flee: false });
+  }
+  sfx.pop();
+  toast(`Crows are eating your ${fieldName(crowField)}! Run over to chase them off`, 3);
+  return true;
+}
+function updateCrows(dt: number) {
+  if (!crows.length) return;
+  crowLife -= dt;
+  for (const cr of [...crows]) {
+    const o = cr.obj;
+    o.children.filter((ch) => ch.name === "wing").forEach((w, i) => (w.rotation.z = Math.sin(clock * 30) * 0.8 * (i ? -1 : 1)));
+    if (!cr.flee && (near(o.position, 3) || crowLife <= 0)) {
+      cr.flee = true;
+      if (near(o.position, 3)) sfx.tick();
+    }
+    if (cr.flee) {
+      o.position.y += dt * 6;
+      o.position.z -= dt * 8;
+      if (o.position.y > 12) { scene.remove(o); crows.splice(crows.indexOf(cr), 1); }
+      continue;
+    }
+    if (!cr.tile || cr.tile.growth < 1) {
+      cr.tile = nearestTile(o.position, (t) => t.field === crowField && t.growth >= 1 && !crows.some((c2) => c2 !== cr && c2.tile === t))
+        ?? nearestTile(o.position, (t) => t.growth >= 1);
+      if (!cr.tile) { cr.flee = true; continue; }
+    }
+    const tp = cr.tile.pos.clone().add(V(rand(-0.05, 0.05), 0, 0));
+    const landed = moveTo(o, tp, 7, dt);
+    o.position.y = THREE.MathUtils.lerp(o.position.y, landed ? 0.35 : 2.2, Math.min(1, dt * 4));
+    if (landed) {
+      cr.eat -= dt;
+      o.rotation.x = Math.max(0, Math.sin(clock * 12)) * 0.4;
+      if (cr.eat <= 0) {
+        cr.eat = rand(2, 3.5);
+        cr.tile.growth = -1;
+        decor.burst(cr.tile.pos.clone().setY(0.5), 0xf0c94a, 4);
+        cr.tile = null;
+      }
+    }
+  }
+  if (!crows.length) toast("The crows are gone");
+}
+
+// ---- breakdowns ----
+const broken = new Set<Machine>();
+const brokenLabels = new Map<Machine, M.Label>();
+function breakMachine(m: Machine) {
+  broken.add(m);
+  const l = new M.Label(320, 96, 2.6);
+  l.set("Hold here to fix", "BROKEN!", "rgba(198,40,40,0.92)");
+  l.sprite.position.set(m.center.x, 4.6, m.center.z);
+  scene.add(l.sprite);
+  brokenLabels.set(m, l);
+}
+function fixMachine(m: Machine) {
+  broken.delete(m);
+  const l = brokenLabels.get(m);
+  if (l) scene.remove(l.sprite);
+  brokenLabels.delete(m);
+  confetti(m.center.clone());
+  sfx.build();
+  toast(`${m.name} fixed!`);
+}
+
+// ---- wholesale orders ----
+interface Order { kind: Kind; want: number; got: number; left: number; reward: number }
+let order: Order | null = null;
+const truckPos = V(9.6, 0, 6.4), orderZone = V(7.6, 0, 6.4);
+const truck = M.van(0x8e24aa);
+truck.position.copy(truckPos);
+truck.rotation.y = Math.PI / 2;
+truck.visible = false;
+scene.add(truck);
+const truckLabel = new M.Label(340, 110, 3.0);
+truckLabel.sprite.position.set(truckPos.x, 3.2, truckPos.z);
+truckLabel.sprite.visible = false;
+scene.add(truckLabel.sprite);
+let orderDecal: Decal | null = null;
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function newOrder() {
+  const kinds: Kind[] = ["wheat"];
+  for (const m of machines) if (m.on && !m.store) kinds.push(m.to);
+  const kind = pick(kinds.slice(-3)); // favour the newer, pricier goods
+  const want = Math.round(rand(10, 18) + demandLevel() * 3);
+  order = { kind, want, got: 0, left: want * 7 + 40, reward: Math.round(want * PRICE[kind] * 2) };
+  truck.visible = true;
+  truckLabel.sprite.visible = true;
+  if (!orderDecal) { orderDecal = new Decal(1.9, 1.9, orderZone.x, orderZone.z); orderDecal.zone("ORDER", "#ce93d8"); }
+  orderDecal.mesh.visible = true;
+  popIn(truck, 0);
+  toast(`Wholesale order: ${want} ${kind} for ${money(order.reward)}!`, 3);
+}
+function endOrder(ok: boolean) {
+  if (!order) return;
+  if (ok) {
+    coins += order.reward;
+    lifetime += order.reward;
+    P.sendScore(lifetime);
+    confetti(truckPos.clone().setY(1.5));
+    sfx.build();
+    decor.floatText("+" + money(order.reward), truckPos.clone().setY(3), "#ffe066");
+    toast(`Order delivered! +${money(order.reward)}`);
+  } else toast(`The truck left without its ${order.kind}. Order missed!`, 3);
+  order = null;
+  truck.visible = false;
+  truckLabel.sprite.visible = false;
+  if (orderDecal) orderDecal.mesh.visible = false;
+  orderTimer = rand(45, 80);
+}
+
+/** Zone checks for events. Runs inside updatePlayer so the hold timers work. */
+function eventZones(dt: number, tick: boolean): boolean {
+  let did = false;
+  for (const m of broken) {
+    if (ready("fix:" + m.id, V(m.center.x, 0, m.center.z), 3.1, dt, true, 2.0)) fixMachine(m);
+  }
+  if (order && ready("order", orderZone, 1.2, dt, bag.countOf(order.kind) > 0) && tick) {
+    const it = bag.take((k) => k === order!.kind);
+    if (it) {
+      fly(M.itemMesh(it.kind), it.at, () => truckPos.clone().setY(1.2), undefined, 0.3, 1.2);
+      order.got++;
+      did = true;
+      if (order.got >= order.want) endOrder(true);
+    }
+  }
+  return did;
+}
+
+function updateEvents(dt: number) {
+  const lv = demandLevel();
+  if (shownLevel >= 0 && lv > shownLevel) toast(`Word is spreading! Demand level ${lv + 1}: more shoppers, bigger orders`, 3);
+  shownLevel = lv;
+
+  // rush hour at one stand
+  if (rush) {
+    rush.left -= dt;
+    if (rush.left <= 0) { toast(`The rush at the ${rush.c.name.toLowerCase()} is over`); rush = null; }
+  } else if (lifetime >= 400 && (rushTimer -= dt) <= 0) {
+    rushTimer = rand(100, 170) / (1 + 0.1 * lv);
+    const c = pick(counters.filter((cc) => cc.on));
+    rush = { c, left: 35 + lv * 3 };
+    c.spawnTimer = 0;
+    toast(`RUSH HOUR at the ${c.name.toLowerCase()}!`, 3);
+    sfx.build();
+  }
+
+  if (!crows.length && lifetime >= 250 && (crowTimer -= dt) <= 0) crowTimer = spawnCrows() ? rand(70, 120) / (1 + 0.1 * lv) : 10;
+  updateCrows(dt);
+
+  const working = machines.filter((m) => m.on && !m.store && !broken.has(m));
+  if (lifetime >= 900 && broken.size < 1 + Math.floor(lv / 3) && working.length && (breakTimer -= dt) <= 0) {
+    breakTimer = rand(80, 140) / (1 + 0.1 * lv);
+    const m = pick(working);
+    breakMachine(m);
+    toast(`The ${m.name.toLowerCase()} broke down! Go and fix it`, 3);
+  }
+  for (const m of broken) if (Math.random() < dt * 2) decor.burst(V(m.center.x, 3, m.center.z), 0x555555, 1);
+
+  if (order) {
+    order.left -= dt;
+    truckLabel.set(`${order.got}/${order.want} ${order.kind}`, `ORDER ${mmss(order.left)} · ${money(order.reward)}`, order.left < 30 ? "rgba(198,40,40,0.9)" : "rgba(106,27,154,0.9)");
+    if (order.left <= 0) endOrder(false);
+  } else if (lifetime >= 700 && (orderTimer -= dt) <= 0) newOrder();
+
+  // banner of everything going on
+  const lines: string[] = [];
+  if (rush) lines.push(`🔥 Rush at the ${rush.c.name.toLowerCase()} ${mmss(rush.left)}`);
+  if (crows.some((c) => !c.flee)) lines.push(`🐦 Crows on the ${fieldName(crowField)}!`);
+  for (const m of broken) lines.push(`🔧 ${m.name} is broken`);
+  if (order) lines.push(`🚚 ${order.got}/${order.want} ${order.kind} · ${mmss(order.left)}`);
+  const html = lines.join("<br>");
+  if (eventEl.innerHTML !== html) eventEl.innerHTML = html;
+  eventEl.classList.toggle("show", lines.length > 0);
+}
+/** Where the guide arrow should point when something needs you. */
+function eventTarget(): THREE.Vector3 | null {
+  const cr = crows.find((c) => !c.flee);
+  if (cr) return cr.obj.position.clone().setY(0);
+  const b = [...broken][0];
+  if (b) return V(b.center.x, 0, b.center.z + 2);
+  if (order && bag.countOf(order.kind) > 0) return orderZone;
+  return null;
 }
 
 // ------------------------------------------------------------------
@@ -1611,7 +1850,7 @@ function updatePlayer(dt: number) {
 function updateMachines(dt: number) {
   for (const m of machines) {
     if (!m.on) continue;
-    const working = m.input.count > 0 && !m.output.full;
+    const working = m.input.count > 0 && !m.output.full && !broken.has(m);
     m.anim(dt, working);
     if (!working) { m.timer = 0; continue; }
     m.timer += dt;
@@ -1665,6 +1904,8 @@ function updateGuide() {
     const src = machines.find((m) => m.on && m.to === k);
     if (bag.countOf(k) > 0) target = front.c.sellZone;
     else if (src && src.output.count > 0) target = src.outZone;
+  } else if (eventTarget()) {
+    target = eventTarget();
   } else if (nextPad && coins + nextPad.paid >= nextPad.def.cost) {
     target = V(nextPad.def.x, 0, nextPad.def.z);
   }
@@ -1681,7 +1922,7 @@ function updateGuide() {
 interface SaveData {
   v: 3; coins: number; lifetime: number; built: string[]; paid: Record<string, number>; lvl: Record<string, number>;
   bag: Kind[]; shelves: Record<string, Kind[]>; machines: Record<string, [Kind[], Kind[]]>; cash: Record<string, number>; tiles?: number[];
-  rating?: Record<string, number>;
+  rating?: Record<string, number>; broken?: string[]; order?: Order | null;
 }
 interface SaveV2 {
   v: 2; coins: number; lifetime: number; built: string[]; paid: Record<string, number>;
@@ -1694,6 +1935,7 @@ function persist() {
     machines: Object.fromEntries(machines.map((m) => [m.id, [m.input.kinds(), m.output.kinds()]])),
     cash: Object.fromEntries(counters.map((c) => [c.id, c.cash.value])),
     rating: Object.fromEntries(counters.map((c) => [c.id, Math.round(c.rating * 100) / 100])),
+    broken: [...broken].map((m) => m.id), order,
     tiles: tiles.map((t) => Math.round(t.growth * 100) / 100),
   };
   P.save(GAME_ID, JSON.stringify(d));
@@ -1736,6 +1978,8 @@ async function load() {
       if (h.id === "h.millW" && !mill.on) continue;
       if (L(h.id) > 0 && owner?.on) spawnHelper(h, false);
     }
+    for (const id of d.broken ?? []) { const m = machines.find((mm) => mm.id === id); if (m?.on) breakMachine(m); }
+    if (d.order) { newOrder(); Object.assign(order!, d.order); }
   }
   applyCaps();
   // Restored things appear instantly, without the pop-in.
@@ -1783,6 +2027,7 @@ function update(dt: number) {
   updateFlyers(dt);
   updatePops(dt);
   updateBits(dt);
+  updateEvents(dt);
   updateGuide();
 
   // camera follows the farmer
@@ -1843,6 +2088,13 @@ if (location.search.includes("debug")) {
     give: (n: number) => { coins += n; },
     build: (id: string) => { const p = PADS.find((pp) => pp.id === id); if (p && !built.has(p.id)) { built.add(p.id); p.build(true); refreshPads(); } },
     setLvl: (k: string, v: number) => { lvl[k] = v; applyCaps(); const h = HELPERS.find((hh) => hh.id === k); if (h && v > 0) spawnHelper(h, true); },
+    ev: (k: string) => {
+      if (k === "crows") spawnCrows();
+      if (k === "break") breakMachine(machines.find((m) => m.on && !m.store && !broken.has(m))!);
+      if (k === "order") newOrder();
+      if (k === "rush") rush = { c: stallC, left: 30 };
+    },
+    events: () => ({ level: demandLevel(), rush: rush?.c.id ?? null, crows: crows.length, broken: [...broken].map((m) => m.id), order: order && { ...order } }),
     rate: (id: string, r: number) => { const c = counters.find((cc) => cc.id === id); if (c) c.rating = r; },
     fill: (id: string, kind: Kind, n: number) => {
       const m = machines.find((mm) => mm.id === id);
