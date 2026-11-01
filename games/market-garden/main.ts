@@ -187,6 +187,13 @@ class Pile {
   constructor(public group: THREE.Object3D, public cols = 2, public rows = 2, public sx = 0.7, public sz = 0.55, public layerH = 0.27) {}
   get full() { return this.items.length >= this.cap; }
   get space() { return Math.max(0, this.cap - this.items.length); }
+  /** Optional limit per product (counters split their space evenly between what they sell). */
+  kindCap?: (k: Kind) => number;
+  spaceFor(k: Kind) {
+    const left = this.space;
+    return this.kindCap ? Math.max(0, Math.min(left, this.kindCap(k) - this.countOf(k))) : left;
+  }
+  fits(k: Kind) { return this.spaceFor(k) > 0; }
   /** Show a small "n/cap" sign above this store. */
   withLabel(y: number, cap: number) {
     this.cap = cap;
@@ -546,13 +553,13 @@ function addUpPad(owner: string, name: string, pos: THREE.Vector3) {
 // Counters: market stall, egg stand, dairy stand. Each has its own customers.
 // ------------------------------------------------------------------
 interface Customer {
-  obj: THREE.Group; state: "walk" | "leave"; kind: Kind; want: number; got: number; paid: number; road: boolean;
+  obj: THREE.Group; state: "walk" | "leave"; kind: Kind; want: number; got: number; paid: number; road: boolean; age: number;
   timer: number; patience: number; maxPatience: number; waited: number; angry: boolean; bubble: Bubble; hands: Pile;
 }
 interface Counter {
   id: string; name: string; tier: number; on: boolean; accepts: Kind[]; side: number; x: number; z: number;
   shelf: Pile; sellZone: THREE.Vector3; cash: Cash; cashZone: THREE.Vector3; upPad: THREE.Vector3;
-  customers: Customer[]; spawnTimer: number; lost: number;
+  customers: Customer[]; spawnTimer: number; lost: number; rating: number; stars: M.Label; kinds: () => Kind[];
   every: () => number; demand: () => { options: [Kind, number][]; maxWant: number };
   build: (animate: boolean) => void;
 }
@@ -569,10 +576,17 @@ function makeCounter(id: string, name: string, tier: number, x: number, z: numbe
   const cashGroup = new THREE.Group();
   cashGroup.position.set(sx, 0, z + 2.6);
   scene.add(cashGroup);
+  const stars = new M.Label(330, 80, 2.2);
+  stars.sprite.position.set(x, 3.3, z);
+  stars.sprite.visible = false;
+  scene.add(stars.sprite);
   const c: Counter = {
     id, name, tier, on: false, accepts, side, x, z, shelf, sellZone: V(sx, 0, z), cash: new Cash(cashGroup), cashZone: V(sx, 0, z + 2.6),
-    upPad: V(sx, 0, z - 2.5), customers: [], spawnTimer: 0.3, lost: 0, every, demand, build: () => {},
+    upPad: V(sx, 0, z - 2.5), customers: [], spawnTimer: 0.3, lost: 0, rating: 3, stars, every, demand, build: () => {},
+    kinds: () => demand().options.map(([k]) => k),
   };
+  // Shelf space is shared equally between the products this counter sells right now.
+  shelf.kindCap = () => Math.max(1, Math.floor(shelf.cap / c.kinds().length));
   c.build = (animate) => {
     if (c.on) return;
     c.on = true;
@@ -584,6 +598,7 @@ function makeCounter(id: string, name: string, tier: number, x: number, z: numbe
     solid(x, z, 1.3, 3.3);
     new Decal(1.8, 2.6, sx, z).zone("SELL", "#ffd54f");
     shelf.label!.sprite.visible = true;
+    stars.sprite.visible = true;
     addUpPad(id, name, c.upPad);
   };
   return c;
@@ -694,11 +709,11 @@ function plantTile(t: Tile) {
 /** Unload one item at a time. Waits (returns false) while the target is full. */
 function unloadTick(v: Carrier, dt: number, target: Pile): boolean {
   if (v.load.count === 0) return true;
-  if (target.full) return false;
+  if (!v.load.items.some((i) => target.fits(i.kind))) return false;
   v.timer -= dt;
   if (v.timer > 0) return false;
   v.timer = 0.07;
-  const it = v.load.take();
+  const it = v.load.take((k) => target.fits(k));
   if (it) target.add(it.kind, it.at);
   return v.load.count === 0;
 }
@@ -744,7 +759,7 @@ function harvesterWorker(v: Vehicle, dt: number) {
     // Only go out when there's ripe wheat and somewhere to put it.
     const ripe = tiles.filter((t) => t.growth >= 1).length;
     if (v.load.count > 0) v.state = "deliver";
-    else if (ripe >= 4 && dest.pile.space >= 4) v.state = "gather";
+    else if (ripe >= 4 && dest.pile.spaceFor("wheat") >= 4) v.state = "gather";
     else moveTo(v.obj, v.home, vSpeed(v), dt);
   }
 }
@@ -763,7 +778,7 @@ function vanWorker(v: Vehicle, dt: number) {
   } else if (v.state === "deliver") {
     if (moveTo(v.obj, stallC.sellZone.clone().add(V(1.4, 0, -0.6)), vSpeed(v), dt) && unloadTick(v, dt, stallC.shelf)) v.state = "home";
   } else {
-    if (bakeryM.output.count >= 4 && stallC.shelf.space >= 4) v.state = "fetch";
+    if (bakeryM.output.count >= 4 && stallC.shelf.spaceFor("bread") >= 4) v.state = "fetch";
     else moveTo(v.obj, v.home, vSpeed(v), dt);
   }
 }
@@ -800,20 +815,23 @@ function walkAnim(obj: THREE.Object3D, moving: boolean) {
 /** Hired farmhands. Each one runs a single route; you pay to make them faster and stronger. */
 interface End { pos: THREE.Vector3; pile: Pile }
 interface HelperDef {
-  id: string; name: string; owner: string; tier: number; shirt: number; home: THREE.Vector3; desc: string;
+  id: string; name: string; owner: string; tier: number; shirt: number; home: THREE.Vector3; desc: string; kind: Kind;
   src: () => End | "field"; dst: () => End;
 }
 const shelfEnd = (c: Counter): End => ({ pos: c.sellZone, pile: c.shelf });
 const outEnd = (m: Machine): End => ({ pos: m.outZone, pile: m.output });
 const inEnd = (m: Machine): End => ({ pos: m.inZone, pile: m.input });
 const HELPERS: HelperDef[] = [
-  { id: "h.flour", name: "Flour helper", owner: "bakery", tier: 2, shirt: 0x1e88e5, home: V(-1.8, 0, -7.6), desc: "Carries flour from the windmill to the bakery", src: () => outEnd(mill), dst: () => inEnd(bakeryM) },
-  { id: "h.bread", name: "Bread helper", owner: "bakery", tier: 2, shirt: 0xef6c00, home: V(-1.8, 0, -12.8), desc: "Carries bread from the bakery to the market stall", src: () => outEnd(bakeryM), dst: () => shelfEnd(stallC) },
-  { id: "h.hen", name: "Hen feeder", owner: "coop", tier: 3, shirt: 0x8e24aa, home: V(18.4, 0, -8.0), desc: "Cuts ripe wheat and feeds it to the hens", src: () => "field", dst: () => inEnd(coopM) },
-  { id: "h.egg", name: "Egg helper", owner: "coop", tier: 3, shirt: 0xfdd835, home: V(12.6, 0, 0.8), desc: "Carries eggs from the coop to the egg stand", src: () => outEnd(coopM), dst: () => shelfEnd(eggC) },
-  { id: "h.cow", name: "Cow feeder", owner: "cowshed", tier: 4, shirt: 0x6d4c41, home: V(25.8, 0, -1.2), desc: "Cuts ripe wheat and feeds it to the cows", src: () => "field", dst: () => inEnd(shedM) },
-  { id: "h.milk", name: "Milk helper", owner: "cowshed", tier: 4, shirt: 0x039be5, home: V(19.4, 0, -1.2), desc: "Carries milk to the creamery (or the dairy stand)", src: () => outEnd(shedM), dst: () => (creamM.on ? inEnd(creamM) : shelfEnd(dairyC)) },
-  { id: "h.cheese", name: "Cheese helper", owner: "creamery", tier: 6, shirt: 0xffa000, home: V(19.4, 0, -10.4), desc: "Carries cheese from the creamery to the dairy stand", src: () => outEnd(creamM), dst: () => shelfEnd(dairyC) },
+  { id: "h.wheat", kind: "wheat", name: "Wheat seller", owner: "stall", tier: 1, shirt: 0x7cb342, home: V(-2.6, 0, 1.2), desc: "Cuts ripe wheat and stocks it on the market stall", src: () => "field", dst: () => shelfEnd(stallC) },
+  { id: "h.flourS", kind: "flour", name: "Flour seller", owner: "stall", tier: 2, shirt: 0x90a4ae, home: V(-2.6, 0, -0.4), desc: "Carries flour from the windmill to the market stall", src: () => outEnd(mill), dst: () => shelfEnd(stallC) },
+  { id: "h.flour", kind: "flour", name: "Flour helper", owner: "bakery", tier: 2, shirt: 0x1e88e5, home: V(-1.8, 0, -7.6), desc: "Carries flour from the windmill to the bakery", src: () => outEnd(mill), dst: () => inEnd(bakeryM) },
+  { id: "h.bread", kind: "bread", name: "Bread helper", owner: "bakery", tier: 2, shirt: 0xef6c00, home: V(-1.8, 0, -12.8), desc: "Carries bread from the bakery to the market stall", src: () => outEnd(bakeryM), dst: () => shelfEnd(stallC) },
+  { id: "h.hen", kind: "wheat", name: "Hen feeder", owner: "coop", tier: 3, shirt: 0x8e24aa, home: V(18.4, 0, -8.0), desc: "Cuts ripe wheat and feeds it to the hens", src: () => "field", dst: () => inEnd(coopM) },
+  { id: "h.egg", kind: "egg", name: "Egg helper", owner: "coop", tier: 3, shirt: 0xfdd835, home: V(12.6, 0, 0.8), desc: "Carries eggs from the coop to the egg stand", src: () => outEnd(coopM), dst: () => shelfEnd(eggC) },
+  { id: "h.cow", kind: "wheat", name: "Cow feeder", owner: "cowshed", tier: 4, shirt: 0x6d4c41, home: V(25.8, 0, -1.2), desc: "Cuts ripe wheat and feeds it to the cows", src: () => "field", dst: () => inEnd(shedM) },
+  { id: "h.milk", kind: "milk", name: "Milk helper", owner: "cowshed", tier: 4, shirt: 0x039be5, home: V(19.4, 0, -1.2), desc: "Carries milk to the creamery (or the dairy stand)", src: () => outEnd(shedM), dst: () => (creamM.on ? inEnd(creamM) : shelfEnd(dairyC)) },
+  { id: "h.milkS", kind: "milk", name: "Milk seller", owner: "dairy", tier: 4, shirt: 0x4fc3f7, home: V(20.6, 0, 1.6), desc: "Carries milk from the cow shed to the dairy stand", src: () => outEnd(shedM), dst: () => shelfEnd(dairyC) },
+  { id: "h.cheese", kind: "cheese", name: "Cheese helper", owner: "creamery", tier: 6, shirt: 0xffa000, home: V(19.4, 0, -10.4), desc: "Carries cheese from the creamery to the dairy stand", src: () => outEnd(creamM), dst: () => shelfEnd(dairyC) },
 ];
 interface Helper extends Carrier { def: HelperDef; obj: THREE.Group; state: "home" | "fetch" | "deliver" }
 const helpers: Helper[] = [];
@@ -839,10 +857,10 @@ function helperThink(h: Helper, dt: number) {
   if (h.state === "home") {
     const has = src === "field" ? tiles.some((t) => t.growth >= 1) : src.pile.count > 0;
     if (h.load.count > 0) h.state = "deliver";
-    else if (has && dst.pile.space > 0) h.state = "fetch";
+    else if (has && dst.pile.fits(h.def.kind)) h.state = "fetch";
     else moveTo(h.obj, h.def.home, speed, dt);
   } else if (h.state === "fetch") {
-    const want = Math.min(cap, dst.pile.space);
+    const want = Math.min(cap, dst.pile.spaceFor(h.def.kind));
     if (want === 0 && h.load.count === 0) h.state = "home";
     else if (h.load.count >= Math.max(1, want)) h.state = "deliver";
     else if (src === "field") {
@@ -1038,6 +1056,12 @@ function levelRow(key: string, title: string, caps: number[], costs: number[], t
     buy: () => { lvl[key] = l + 1; after(); },
   };
 }
+/** A helper can be hired once the building it takes from exists. */
+function helperReady(d: HelperDef) {
+  if (d.id === "h.flourS") return mill.on;
+  if (d.id === "h.milkS") return shedM.on;
+  return true;
+}
 function helperRow(d: HelperDef): Row {
   const l = L(d.id), max = l >= HELPER_SPEED.length - 1;
   if (l === 0) {
@@ -1060,8 +1084,11 @@ function rowsFor(owner: string): Row[] {
     out.push(levelRow(m.id + ".speed", "Work speed", SPEED_MULT, SPEED_COST, m.tier, (v) => `${(1 / v).toFixed(1)}x`));
   }
   const c = counters.find((cc) => cc.id === owner);
-  if (c) out.push(levelRow(c.id + ".shelf", "Counter space", SHELF_CAPS, SHELF_COST, c.tier, (v) => `Holds ${v}`));
-  for (const d of HELPERS) if (d.owner === owner) out.push(helperRow(d));
+  if (c) {
+    const n = c.kinds().length;
+    out.push(levelRow(c.id + ".shelf", "Counter space", SHELF_CAPS, SHELF_COST, c.tier, (v) => (n > 1 ? `${Math.floor(v / n)} of each` : `Holds ${v}`)));
+  }
+  for (const d of HELPERS) if (d.owner === owner && helperReady(d)) out.push(helperRow(d));
   return out;
 }
 function renderPanel() {
@@ -1132,6 +1159,35 @@ function updateBuyHold(dt: number) {
 }
 
 // ------------------------------------------------------------------
+// Reputation: every shopper leaves a review. Fast service = 5 stars,
+// a long wait scores lower, giving up scores 1. The rating is a running
+// average of recent reviews, so it moves steadily, never hits 0, and can
+// always be rebuilt. More stars bring shoppers more often.
+// ------------------------------------------------------------------
+const RATING_MIN = 1, RATING_MAX = 5;
+function review(c: Counter, cu: Customer, served: boolean) {
+  let score = 1;
+  if (served) {
+    // time from joining the line to being fully served
+    const t = cu.age;
+    score = t <= 10 ? 5 : t >= 45 ? 2 : 5 - ((t - 10) / 35) * 3;
+  } else if (cu.got > 0) score = 1.5;
+  const before = c.rating;
+  c.rating = THREE.MathUtils.clamp(c.rating * 0.88 + score * 0.12, RATING_MIN, RATING_MAX);
+  if (Math.floor(before * 2) !== Math.floor(c.rating * 2)) {
+    toast(`${c.name}: ${c.rating.toFixed(1)} stars ${c.rating > before ? "▲" : "▼"}`);
+  }
+}
+/** 1 star: shoppers come 3x less often than at 3 stars. 5 stars: about 1.7x more often. */
+const ratingRate = (r: number) => Math.max(0.33, r / 3);
+function drawStars(c: Counter) {
+  const r = c.rating;
+  const full = Math.round(r);
+  const bg = r >= 4 ? "rgba(46,125,50,0.9)" : r >= 2.5 ? "rgba(40,28,20,0.85)" : "rgba(198,40,40,0.9)";
+  c.stars.set(`${"★".repeat(full)}${"☆".repeat(5 - full)} ${r.toFixed(1)}`, "", bg);
+}
+
+// ------------------------------------------------------------------
 // Customers
 // ------------------------------------------------------------------
 const SHIRTS = [0xe57373, 0x64b5f6, 0x81c784, 0xffb74d, 0xba68c8, 0x4db6ac, 0xf06292, 0xfff176];
@@ -1155,7 +1211,7 @@ function updateCounter(c: Counter, dt: number) {
   const waiting = c.customers.filter((cu) => cu.state === "walk").length;
   // A long line puts people off: no new shoppers join when it's full.
   if (c.spawnTimer <= 0 && waiting < 6) {
-    c.spawnTimer = c.every() * (0.7 + Math.random() * 0.6);
+    c.spawnTimer = (c.every() / ratingRate(c.rating)) * (0.7 + Math.random() * 0.6);
     const obj = M.person(SHIRTS[Math.floor(Math.random() * SHIRTS.length)]);
     obj.position.set(spawnX(c), 0, ROAD_Z);
     scene.add(obj);
@@ -1167,7 +1223,7 @@ function updateCounter(c: Counter, dt: number) {
     obj.add(hg);
     const d = pickDemand(c);
     const maxPatience = 26 + d.want * 4;
-    c.customers.push({ obj, state: "walk", kind: d.kind, want: d.want, got: 0, paid: 0, road: true, timer: 0, patience: maxPatience, maxPatience, waited: 0, angry: false, bubble, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
+    c.customers.push({ obj, state: "walk", kind: d.kind, want: d.want, got: 0, paid: 0, road: true, age: 0, timer: 0, patience: maxPatience, maxPatience, waited: 0, angry: false, bubble, hands: new Pile(hg, 1, 1, 0, 0, 0.22) });
   }
   let queueIdx = 0;
   for (const cu of [...c.customers]) {
@@ -1183,6 +1239,7 @@ function updateCounter(c: Counter, dt: number) {
       walkAnim(cu.obj, true);
       continue;
     }
+    cu.age += dt;
     const slot = queueSlot(c, queueIdx);
     let arrived = false;
     if (cu.road) {
@@ -1213,6 +1270,7 @@ function updateCounter(c: Counter, dt: number) {
             decor.floatText(money(cu.paid), cu.obj.position.clone().setY(2.6));
             sfx.coin();
             cu.state = "leave";
+            review(c, cu, true);
           }
         }
       }
@@ -1222,7 +1280,8 @@ function updateCounter(c: Counter, dt: number) {
         cu.bubble.set(cu.kind, cu.got, cu.want, 0, true);
         if (cu.paid > 0) c.cash.add(cu.paid, cu.obj.position.clone().setY(1.2));
         c.lost++;
-        if (c.lost % 2 === 1) toast(`A customer gave up waiting for ${cu.kind}`);
+        review(c, cu, false);
+        if (c.lost % 2 === 1) toast(`A customer gave up waiting for ${cu.kind}. Your rating drops!`);
       }
     }
     queueIdx++;
@@ -1394,12 +1453,13 @@ function updatePlayer(dt: number) {
   for (const c of counters) {
     if (!c.on) continue;
     const has = bag.items.some((i) => c.accepts.includes(i.kind));
-    if (ready("sell:" + c.id, c.sellZone, 1.2, dt, has && !c.shelf.full)) {
+    const fits = bag.items.some((i) => c.accepts.includes(i.kind) && c.shelf.fits(i.kind));
+    if (ready("sell:" + c.id, c.sellZone, 1.2, dt, fits)) {
       if (tick) {
-        const it = bag.take((kk) => c.accepts.includes(kk));
+        const it = bag.take((kk) => c.accepts.includes(kk) && c.shelf.fits(kk));
         if (it) { c.shelf.add(it.kind, it.at); did = true; }
       }
-    } else if (has && c.shelf.full && near(c.sellZone, 1.2)) warn(`${c.name} is full! Upgrade it on the purple pad`);
+    } else if (has && !fits && near(c.sellZone, 1.2)) warn(`No room for that on the ${c.name.toLowerCase()}. Upgrade it on the purple pad`);
     if (near(c.cashZone, 1.25) && c.cash.value > 0) {
       const v = c.cash.collect(() => playerPos().clone().setY(1.4));
       decor.floatText("+" + money(v), playerPos().clone().setY(2.8), "#ffe066");
@@ -1537,6 +1597,7 @@ function updateGuide() {
 interface SaveData {
   v: 3; coins: number; lifetime: number; built: string[]; paid: Record<string, number>; lvl: Record<string, number>;
   bag: Kind[]; shelves: Record<string, Kind[]>; machines: Record<string, [Kind[], Kind[]]>; cash: Record<string, number>; tiles?: number[];
+  rating?: Record<string, number>;
 }
 interface SaveV2 {
   v: 2; coins: number; lifetime: number; built: string[]; paid: Record<string, number>;
@@ -1548,6 +1609,7 @@ function persist() {
     shelves: Object.fromEntries(counters.map((c) => [c.id, c.shelf.kinds()])),
     machines: Object.fromEntries(machines.map((m) => [m.id, [m.input.kinds(), m.output.kinds()]])),
     cash: Object.fromEntries(counters.map((c) => [c.id, c.cash.value])),
+    rating: Object.fromEntries(counters.map((c) => [c.id, Math.round(c.rating * 100) / 100])),
     tiles: tiles.map((t) => Math.round(t.growth * 100) / 100),
   };
   P.save(GAME_ID, JSON.stringify(d));
@@ -1577,12 +1639,15 @@ async function load() {
     // Older saves may hold more than today's limits allow: trim to the caps.
     const fill = (src: Kind[] | undefined, pile: Pile) => (src ?? []).slice(0, pile.cap).forEach((k) => pile.add(k));
     fill(d.bag, bag);
-    for (const c of counters) if (c.on) fill(d.shelves[c.id], c.shelf);
+    for (const c of counters) {
+      c.rating = THREE.MathUtils.clamp(d.rating?.[c.id] ?? 3, RATING_MIN, RATING_MAX);
+      if (c.on) (d.shelves[c.id] ?? []).forEach((k) => { if (c.shelf.fits(k)) c.shelf.add(k); });
+    }
     for (const m of machines) if (m.on && d.machines[m.id]) { fill(d.machines[m.id][0], m.input); fill(d.machines[m.id][1], m.output); }
     d.tiles?.forEach((g, i) => { if (tiles[i]) tiles[i].growth = g; });
     for (const c of counters) if (c.on && (d.cash[c.id] ?? 0) > 0) c.cash.add(d.cash[c.id]);
     for (const h of HELPERS) {
-      const owner = machines.find((m) => m.id === h.owner);
+      const owner = machines.find((m) => m.id === h.owner) ?? counters.find((c) => c.id === h.owner);
       if (L(h.id) > 0 && owner?.on) spawnHelper(h, false);
     }
   }
@@ -1627,7 +1692,7 @@ function update(dt: number) {
   for (const h of helpers) helperThink(h, dt);
   spinners.forEach((f) => f(dt));
   decor.update(dt, clock, farmer.root.position, playerMoving);
-  for (const c of counters) c.shelf.updateLabel();
+  for (const c of counters) { c.shelf.updateLabel(); if (c.on) drawStars(c); }
   for (const m of machines) { m.input.updateLabel(); m.output.updateLabel(); }
   updateFlyers(dt);
   updatePops(dt);
@@ -1692,14 +1757,15 @@ if (location.search.includes("debug")) {
     give: (n: number) => { coins += n; },
     build: (id: string) => { const p = PADS.find((pp) => pp.id === id); if (p && !built.has(p.id)) { built.add(p.id); p.build(true); refreshPads(); } },
     setLvl: (k: string, v: number) => { lvl[k] = v; applyCaps(); const h = HELPERS.find((hh) => hh.id === k); if (h && v > 0) spawnHelper(h, true); },
+    rate: (id: string, r: number) => { const c = counters.find((cc) => cc.id === id); if (c) c.rating = r; },
     fill: (id: string, kind: Kind, n: number) => {
       const m = machines.find((mm) => mm.id === id);
       const pile = m ? m.output : counters.find((c) => c.id === id)?.shelf;
-      for (let i = 0; i < n && pile && !pile.full; i++) pile.add(kind);
+      for (let i = 0; i < n && pile && pile.fits(kind); i++) pile.add(kind);
     },
     state: () => ({
       coins, lifetime, bag: bag.kinds().join(","), built: [...built], lvl: { ...lvl }, panel: panelOwner,
-      shelves: Object.fromEntries(counters.map((c) => [c.id, `${c.shelf.count}/${c.shelf.cap}`])),
+      shelves: Object.fromEntries(counters.map((c) => [c.id, `${c.shelf.count}/${c.shelf.cap} ${c.kinds().map((k) => k + ":" + c.shelf.countOf(k)).join(",")} r${c.rating.toFixed(2)}`])),
       machines: Object.fromEntries(machines.filter((m) => m.on).map((m) => [m.id, `${m.input.count}/${m.input.cap} -> ${m.output.count}/${m.output.cap}`])),
       helpers: helpers.map((h) => `${h.def.id}:${h.state}:${h.load.count}`),
       q: counters.map((c) => c.customers.map((cu) => `${cu.state}:${cu.kind}x${cu.want}`).join(" ")),
