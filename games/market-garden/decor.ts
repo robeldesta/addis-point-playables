@@ -19,6 +19,7 @@ const CLEAR: [number, number, number, number][] = [
   [-4, 4, -17, -13.5], // dam
   [-11, 36, 7, 9.4], // road east
   [12, 27.5, -15, 7.8], // animal farm: coop, cow shed, creamery, stands
+  [-25.5, -11, -15.5, 1.8], // west fields and grain silo
 ];
 const isClear = (x: number, z: number) => CLEAR.some(([x0, x1, z0, z1]) => x > x0 && x < x1 && z > z0 && z < z1);
 
@@ -143,7 +144,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   // ---- rocks and bushes ----
   for (let i = 0; i < 40; ) {
     const x = rand(-26, 36), z = rand(-17, 22);
-    if (isClear(x, z) || (x > -11.5 && x < 27.5 && z > -16 && z < 11)) continue;
+    if (isClear(x, z) || (x > -25.5 && x < 27.5 && z > -16 && z < 11)) continue;
     const r = M.mesh(new THREE.DodecahedronGeometry(rand(0.25, 0.6), 0), i % 3 ? 0xa9a59c : 0x8f8a80, x, 0.15, z);
     r.scale.y = 0.6;
     r.rotation.y = rand(0, 6);
@@ -152,7 +153,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   }
   for (let i = 0; i < 26; ) {
     const x = rand(-24, 34), z = rand(-17, 22);
-    if (isClear(x, z) || (x > -11.5 && x < 27.5 && z > -16 && z < 11)) continue;
+    if (isClear(x, z) || (x > -25.5 && x < 27.5 && z > -16 && z < 11)) continue;
     const b = new THREE.Group();
     for (let k = 0; k < 3; k++) b.add(M.mesh(new THREE.IcosahedronGeometry(rand(0.35, 0.55), 0), 0x4c9f3d, rand(-0.35, 0.35), 0.35, rand(-0.3, 0.3)));
     b.position.set(x, 0, z);
@@ -169,9 +170,9 @@ export function setupDecor(scene: THREE.Scene): Decor {
     scene.add(t);
     trees.push(t);
   };
-  for (let i = 0; i < 80; ) {
-    const x = rand(-30, 40), z = rand(-26, 24);
-    if (x > -12.5 && x < 28.5 && z > -17 && z < 12) continue;
+  for (let i = 0; i < 90; ) {
+    const x = rand(-40, 40), z = rand(-26, 24);
+    if (x > -26.5 && x < 28.5 && z > -17 && z < 12) continue;
     if (z > -22 && z < -17.4) continue; // river
     addTree(x, z);
     i++;
