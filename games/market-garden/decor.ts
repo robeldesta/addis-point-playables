@@ -17,6 +17,8 @@ const CLEAR: [number, number, number, number][] = [
   [-11, -7, -3, 1], // van garage
   [7, 10.5, -12, 0], // tractor and harvester garages
   [-4, 4, -17, -13.5], // dam
+  [-11, 36, 7, 9.4], // road east
+  [12, 27.5, -15, 7.8], // animal farm: coop, cow shed, creamery, stands
 ];
 const isClear = (x: number, z: number) => CLEAR.some(([x0, x1, z0, z1]) => x > x0 && x < x1 && z > z0 && z < z1);
 
@@ -24,6 +26,7 @@ export interface Decor {
   update: (dt: number, t: number, player: THREE.Vector3, moving: boolean) => void;
   floatText: (text: string, at: THREE.Vector3, color?: string) => void;
   burst: (at: THREE.Vector3, color: number, n?: number) => void;
+  addCritter: (obj: THREE.Group, area: [number, number, number, number], speed: number) => void;
 }
 
 export function setupDecor(scene: THREE.Scene): Decor {
@@ -74,7 +77,8 @@ export function setupDecor(scene: THREE.Scene): Decor {
     scene.add(e, m);
   };
   path(2.2, 24, -0.6, -2);
-  path(30, 2.0, 0, 8.2);
+  path(52, 2.0, 8.5, 8.2);
+  path(15, 1.4, 19.5, 0.3);
   path(5, 1.6, -3.2, -6.8);
   path(1.8, 9, -8.2, 4.2);
   path(4, 1.4, 7, -2);
@@ -107,7 +111,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler();
   let n = 0;
   while (n < 800) {
-    const x = rand(-30, 30), z = rand(-17, 22);
+    const x = rand(-30, 40), z = rand(-17, 22);
     if (isClear(x, z)) continue;
     for (let k = 0; k < 3; k++) {
       e.set(rand(-0.35, 0.35), rand(0, 6), rand(-0.35, 0.35));
@@ -125,7 +129,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   const flowerCols = [0xffffff, 0xffe066, 0xff8fb1, 0xc39bff, 0xff6b6b];
   const flowers = new THREE.InstancedMesh(flowerGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), 360);
   for (let i = 0; i < 360; ) {
-    const x = rand(-28, 28), z = rand(-17, 22);
+    const x = rand(-28, 38), z = rand(-17, 22);
     if (isClear(x, z)) continue;
     p.set(x, 0.22, z);
     s.set(1, 1, 1);
@@ -138,8 +142,8 @@ export function setupDecor(scene: THREE.Scene): Decor {
 
   // ---- rocks and bushes ----
   for (let i = 0; i < 40; ) {
-    const x = rand(-26, 26), z = rand(-17, 22);
-    if (isClear(x, z) || (Math.abs(x) < 11.5 && z > -16 && z < 11)) continue;
+    const x = rand(-26, 36), z = rand(-17, 22);
+    if (isClear(x, z) || (x > -11.5 && x < 27.5 && z > -16 && z < 11)) continue;
     const r = M.mesh(new THREE.DodecahedronGeometry(rand(0.25, 0.6), 0), i % 3 ? 0xa9a59c : 0x8f8a80, x, 0.15, z);
     r.scale.y = 0.6;
     r.rotation.y = rand(0, 6);
@@ -147,8 +151,8 @@ export function setupDecor(scene: THREE.Scene): Decor {
     i++;
   }
   for (let i = 0; i < 26; ) {
-    const x = rand(-24, 24), z = rand(-17, 22);
-    if (isClear(x, z) || (Math.abs(x) < 11.5 && z > -16 && z < 11)) continue;
+    const x = rand(-24, 34), z = rand(-17, 22);
+    if (isClear(x, z) || (x > -11.5 && x < 27.5 && z > -16 && z < 11)) continue;
     const b = new THREE.Group();
     for (let k = 0; k < 3; k++) b.add(M.mesh(new THREE.IcosahedronGeometry(rand(0.35, 0.55), 0), 0x4c9f3d, rand(-0.35, 0.35), 0.35, rand(-0.3, 0.3)));
     b.position.set(x, 0, z);
@@ -165,16 +169,16 @@ export function setupDecor(scene: THREE.Scene): Decor {
     scene.add(t);
     trees.push(t);
   };
-  for (let i = 0; i < 70; ) {
-    const x = rand(-30, 30), z = rand(-26, 24);
-    if (Math.abs(x) < 12.5 && z > -17 && z < 12) continue;
+  for (let i = 0; i < 80; ) {
+    const x = rand(-30, 40), z = rand(-26, 24);
+    if (x > -12.5 && x < 28.5 && z > -17 && z < 12) continue;
     if (z > -22 && z < -17.4) continue; // river
     addTree(x, z);
     i++;
   }
 
   // ---- fences along the road ----
-  for (const x0 of [-14.5, 1.5]) {
+  for (const x0 of [-14.5, 1.5, 15.5]) {
     const f = M.fence(13);
     f.position.set(x0, 0, 9.6);
     scene.add(f);
@@ -202,11 +206,8 @@ export function setupDecor(scene: THREE.Scene): Decor {
     critters.push({ obj, target: obj.position.clone(), wait: rand(0, 3), speed, area, peck: 0 });
   };
   for (let i = 0; i < 6; i++) addCritter(M.chicken(), [5, 11, 2.4, 6.8], 1.4);
-  for (let i = 0; i < 3; i++) addCritter(M.cow(), [12.5, 18, -6, 4], 0.6);
-  // small pen for the cows
-  const pen = M.fence(6.5);
-  pen.position.set(12, 0, 4.6);
-  scene.add(pen);
+  // cows graze beside the (future) cow shed
+  for (let i = 0; i < 3; i++) addCritter(M.cow(), [24.6, 26.8, -9, -3.4], 0.6);
 
   // ---- clouds (drift, and cast soft moving shadows) ----
   const clouds: THREE.Group[] = [];
@@ -242,6 +243,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   const floaters: Floater[] = [];
 
   return {
+    addCritter,
     floatText(text, at, color = "#7CFC7C") {
       const cv = document.createElement("canvas");
       cv.width = 256;
