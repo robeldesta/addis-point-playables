@@ -258,12 +258,12 @@ export function harvester(): THREE.Group {
   return g;
 }
 
-export function van(): THREE.Group {
+export function van(stripe = 0xf28c28): THREE.Group {
   const g = new THREE.Group();
   g.add(mesh(box(1.1, 1.0, 2.0), 0xf2f2f2, 0, 0.85, 0.1));
   g.add(mesh(box(1.1, 0.7, 0.7), 0xf2f2f2, 0, 0.7, -1.2));
   g.add(mesh(box(1.0, 0.4, 0.05), 0xbfe3ff, 0, 0.95, -1.56));
-  g.add(mesh(box(1.12, 0.25, 1.4), 0xf28c28, 0, 1.0, 0.2, false));
+  g.add(mesh(box(1.12, 0.25, 1.4), stripe, 0, 1.0, 0.2, false));
   for (const [x, z] of [[-0.55, -1.0], [0.55, -1.0], [-0.55, 0.7], [0.55, 0.7]]) {
     const w = mesh(cyl(0.28, 0.28, 0.2, 10), 0x222222, x, 0.3, z);
     w.rotation.z = Math.PI / 2;
