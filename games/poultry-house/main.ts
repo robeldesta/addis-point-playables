@@ -2,16 +2,18 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import * as P from "../../src/platform/platform";
-import { DEFAULT_DIMS, Dims, Layout, buildLayout, center, inRect, mountY, rectD, rectW, roofY } from "./sim/layout";
+import { DEFAULT_DIMS, Dims, GATE_W, Layout, buildLayout, center, inRect, mountY, rectD, rectW, roofY } from "./sim/layout";
 import {
   CoverMap, DOOR_RADIUS, EGG_RADIUS, Gear, GearKind, LENS, Lens, SENSOR_RADIUS,
   autoPlace, coversBackDoor, coversDoor, coversEggTable, coversFeedStore, footprint, shopping,
 } from "./sim/gear";
 import { DEAD, Flock, GONE, HEALTHY, SICK } from "./sim/flock";
+import { Staff, Worker } from "./sim/staff";
+import { Person, makePerson, posePerson } from "./person";
 
 const GAME_ID = "poultry-house";
 const SAVE_V = 2; // bump when DEFAULT_DIMS change so old saved sizes are dropped
-type Mode = "plan" | "play";
+type Mode = "plan" | "play" | "tour" | "monitor";
 type Tool = GearKind | "remove";
 type Role = "doctor" | "eggs" | "litter" | "manager";
 type Overlay = "none" | "coverage" | "litter" | "feeders";
@@ -19,7 +21,7 @@ type Overlay = "none" | "coverage" | "litter" | "feeders";
 const ROLES: Record<Role, { name: string; color: number; help: string }> = {
   doctor: { name: "Doctor", color: 0xffffff, help: "Tap a bird or a red/orange alert. Walk there to treat a sick bird or bag a dead one, then take bags out the main door." },
   eggs: { name: "Egg collector", color: 0x42a5f5, help: "Walk past the nest boxes and floor eggs to collect them, then bring them to the egg table to be counted." },
-  litter: { name: "Litter keeper", color: 0x66bb6a, help: "Tap dark, wet litter to rake it and add dry bedding. Wet litter makes ammonia and sick birds." },
+  litter: { name: "Floor keeper", color: 0x66bb6a, help: "Tap dark, wet litter to rake it and add dry bedding. Wet litter makes ammonia and sick birds." },
   manager: { name: "Manager", color: 0xf5c542, help: "Watch the AI: counts, alerts, feeder activity and the door log. Tap an alert to look at it." },
 };
 
@@ -29,25 +31,27 @@ let L: Layout = buildLayout(dims);
 let gears: Gear[] = autoPlace(L, "2.8");
 let cover = new CoverMap(L, gears);
 let flock = new Flock(L);
-let mode: Mode = "plan";
+let staff = new Staff(L, flock);
+let mode: Mode = "monitor";
 let tool: Tool = "overhead";
 let lens: Lens = "2.8";
 let rot: 0 | 1 = 0;
 let role: Role = "doctor";
 let speed = 1;
-let overlay: Overlay = "coverage";
+let overlay: Overlay = "none";
 let truth = false;
 
 const player = {
   x: 0, z: 0, tx: 0, tz: 0, moving: false,
   job: null as null | { kind: "bird"; i: number } | { kind: "rake"; x: number; z: number; t: number },
   eggs: 0, dead: 0, nearDoor: true,
+  route: [] as { x: number; z: number }[],
 };
 
 // ------------------------------------------------------------------ renderer
 P.initPlatform();
 const host = document.getElementById("game")!;
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 host.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
@@ -88,6 +92,7 @@ const mat = (color: number, extra: THREE.MeshLambertMaterialParameters = {}) => 
 const basic = (color: number, opacity = 1) =>
   new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
 
+const labels: THREE.Sprite[] = [];
 function label(text: string, size = 1, color = "#fff"): THREE.Sprite {
   const c = document.createElement("canvas");
   const ctx = c.getContext("2d")!;
@@ -107,6 +112,7 @@ function label(text: string, size = 1, color = "#fff"): THREE.Sprite {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   s.scale.set((c.width / c.height) * size, size, 1);
   s.renderOrder = 10;
+  labels.push(s);
   return s;
 }
 
@@ -133,7 +139,7 @@ scene.add(world, gearGroup);
 let floorCanvas: HTMLCanvasElement;
 let floorCtx: CanvasRenderingContext2D;
 let floorTex: THREE.CanvasTexture;
-const PX = 8; // floor texture pixels per metre
+const PX = 24; // floor texture pixels per metre (cameras look closely at the litter)
 
 let birdBody: THREE.InstancedMesh;
 let birdHead: THREE.InstancedMesh;
@@ -143,9 +149,13 @@ let eggMesh: THREE.InstancedMesh;
 let nestGroup: THREE.Group;
 let bagsGroup: THREE.Group;
 let playerMesh: THREE.Group;
+let playerPerson: Person;
+let playerPose: "walk" | "stand" | "kneel" | "rake" = "stand";
+let crew: { p: Person; tag: THREE.Sprite; text: string }[] = [];
 let jobRing: THREE.Mesh;
 const MAX_MARKERS = 600;
 const MAX_EGGS = 4000;
+const EGG_CART = 360; // 12 trays of 30
 
 function wallTexture(lenM: number, hM: number, windows: boolean): THREE.CanvasTexture {
   const ppm = 20;
@@ -178,6 +188,7 @@ function wallTexture(lenM: number, hM: number, windows: boolean): THREE.CanvasTe
 
 function buildWorld() {
   clearGroup(world);
+  labels.length = 0;
   const { hw, hl } = L;
   const d = L.dims;
 
@@ -188,7 +199,7 @@ function buildWorld() {
   floorCtx = floorCanvas.getContext("2d")!;
   floorTex = new THREE.CanvasTexture(floorCanvas);
   floorTex.colorSpace = THREE.SRGBColorSpace;
-  floorTex.magFilter = THREE.NearestFilter;
+  floorTex.anisotropy = 4;
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(d.width, d.length), new THREE.MeshLambertMaterial({ map: floorTex }));
   floor.rotation.x = -Math.PI / 2;
   world.add(floor);
@@ -250,8 +261,29 @@ function buildWorld() {
   }
   const blockMat = mat(0x9e9c96);
   const meshMat = new THREE.MeshBasicMaterial({ color: 0xdddddd, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false });
+  // Cut a gap in the wall wherever there is a gate, and hang an open gate beside it.
+  const pieces: [number, number, number, number][] = [];
   for (const [x0, z0, x1, z1] of edges.values()) {
+    const cuts = z0 === z1 ? L.gates.filter((g) => Math.abs(g.z - z0) < 1e-3 && g.x > Math.min(x0, x1) && g.x < Math.max(x0, x1)).map((g) => g.x).sort((a, b) => a - b) : [];
+    let start = Math.min(x0, x1);
+    for (const gx of cuts) { pieces.push([start, z0, gx - GATE_W / 2, z0]); start = gx + GATE_W / 2; }
+    pieces.push(z0 === z1 ? [start, z0, Math.max(x0, x1), z1] : [x0, z0, x1, z1]);
+  }
+  const gateMat = mat(0x8d6e4a);
+  for (const g of L.gates) {
+    for (const s of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.9, 0.1), gateMat);
+      post.position.set(g.x + (s * GATE_W) / 2, 0.95, g.z);
+      world.add(post);
+    }
+    const leaf = new THREE.Mesh(new THREE.BoxGeometry(GATE_W - 0.1, 1.1, 0.05), gateMat);
+    leaf.position.set(g.x - GATE_W / 2 + 0.05, 0.6, g.z - (GATE_W - 0.1) / 2);
+    leaf.rotation.y = Math.PI / 2; // swung open into the pen
+    world.add(leaf);
+  }
+  for (const [x0, z0, x1, z1] of pieces) {
     const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len < 0.05) continue;
     const along = x0 === x1 ? Math.PI / 2 : 0;
     const wall = new THREE.Mesh(new THREE.BoxGeometry(len, 0.6, 0.2), blockMat);
     wall.position.set((x0 + x1) / 2, 0.3, (z0 + z1) / 2);
@@ -338,14 +370,18 @@ function buildWorld() {
   eggMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), mat(0xf3e2c3), MAX_EGGS);
   world.add(eggMesh);
 
-  playerMesh = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 1.25, 12), mat(0xffffff));
-  body.position.y = 0.7;
-  body.name = "body";
-  const headM = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 10), mat(0x6d4c41));
-  headM.position.y = 1.5;
-  playerMesh.add(body, headM);
+  playerPerson = makePerson({ coat: 0xffffff, trousers: 0x37474f, hat: 0 });
+  playerMesh = playerPerson.root;
   world.add(playerMesh);
+  // The farm staff: attendants in dark blue overalls and caps, the vet in a white coat.
+  crew = staff.workers.map((w) => {
+    const p = makePerson(w.role === "vet"
+      ? { coat: 0xf4f4f4, trousers: 0x455a64, hat: 0 }
+      : { coat: w.side < 0 ? 0x1f4e8c : 0x2e6b3a, trousers: w.side < 0 ? 0x1f4e8c : 0x2e6b3a, hat: 0xf5c542, skin: w.side < 0 ? 0x5a3a28 : 0x7a5038 });
+    const tag = workerTag();
+    world.add(p.root, tag);
+    return { p, tag, text: "" };
+  });
   jobRing = new THREE.Mesh(new THREE.RingGeometry(0.45, 0.55, 24).rotateX(-Math.PI / 2), basic(0xf5c542, 0.9));
   jobRing.visible = false;
   world.add(jobRing);
@@ -369,27 +405,55 @@ function updateBags() {
   }
 }
 
+// Straw texture, drawn once and tiled over the litter.
+let strawPattern: CanvasPattern | null = null;
+function straw(ctx: CanvasRenderingContext2D): CanvasPattern {
+  if (strawPattern) return strawPattern;
+  const c = document.createElement("canvas");
+  c.width = c.height = 96;
+  const g = c.getContext("2d")!;
+  let seed = 11;
+  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let k = 0; k < 420; k++) {
+    const x = r() * 96, y = r() * 96, a = r() * Math.PI, l = 2 + r() * 7;
+    const light = r() < 0.55;
+    g.strokeStyle = light ? `rgba(245,222,160,${0.35 + r() * 0.4})` : `rgba(120,90,45,${0.25 + r() * 0.35})`;
+    g.lineWidth = 0.6 + r() * 0.9;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+  }
+  strawPattern = ctx.createPattern(c, "repeat")!;
+  return strawPattern;
+}
+let wetCanvas: HTMLCanvasElement | null = null;
+
 function drawFloor() {
   const ctx = floorCtx;
   const W = floorCanvas.width, H = floorCanvas.height;
   // Canvas y=0 is the back wall (z = -hl), matching the plane's UV after rotation.
   const px = (x: number) => (x + L.hw) * PX;
   const pz = (z: number) => (z + L.hl) * PX;
-  ctx.fillStyle = "#8f8d88";
-  ctx.fillRect(0, 0, W, H);
-  for (const p of L.pens) {
-    if (!p.active) { ctx.fillStyle = "#9a9892"; ctx.fillRect(px(p.x0), pz(p.z0), rectW(p) * PX, rectD(p) * PX); continue; }
-    for (let z = Math.floor(p.z0); z < p.z1; z++)
-      for (let x = Math.floor(p.x0); x < p.x1; x++) {
-        const w = flock.wetAt(x + 0.5, z + 0.5);
-        const showWet = overlay === "litter" || role === "litter" && mode === "play";
-        const k = showWet ? Math.min(1, w * 1.2) : Math.min(1, w * 0.6);
-        const r = 214 - 120 * k, g = 182 - 110 * k, b = 112 - 70 * k;
-        ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
-        ctx.fillRect(px(Math.max(x, p.x0)), pz(Math.max(z, p.z0)), PX + 1, PX + 1);
-      }
+  // Litter colour from wetness, one pixel per square metre, smoothed when scaled up.
+  if (!wetCanvas || wetCanvas.width !== flock.wc || wetCanvas.height !== flock.wr) {
+    wetCanvas = document.createElement("canvas");
+    wetCanvas.width = flock.wc; wetCanvas.height = flock.wr;
   }
-  const showCover = mode === "plan" || overlay === "coverage";
+  const wctx = wetCanvas.getContext("2d")!;
+  const img = wctx.createImageData(flock.wc, flock.wr);
+  const showWet = overlay === "litter" || (role === "litter" && mode === "play");
+  for (let c = 0; c < flock.wet.length; c++) {
+    const k = showWet ? Math.min(1, flock.wet[c] * 1.2) : Math.min(1, flock.wet[c] * 0.75);
+    img.data[c * 4] = 200 - 115 * k; img.data[c * 4 + 1] = 168 - 105 * k; img.data[c * 4 + 2] = 104 - 66 * k; img.data[c * 4 + 3] = 255;
+  }
+  wctx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(wetCanvas, 0, 0, W, H);
+  ctx.fillStyle = straw(ctx);
+  ctx.fillRect(0, 0, W, H);
+  // Concrete: the aisle and the empty pen.
+  ctx.fillStyle = "#8f8d88";
+  ctx.fillRect(px(L.aisle.x0), pz(L.aisle.z0), rectW(L.aisle) * PX, rectD(L.aisle) * PX);
+  for (const p of L.pens) if (!p.active) { ctx.fillStyle = "#9a9892"; ctx.fillRect(px(p.x0), pz(p.z0), rectW(p) * PX, rectD(p) * PX); }
+  const showCover = mode === "plan" || (mode === "tour" && tourCover) || overlay === "coverage";
   if (showCover) {
     const s = cover.step * PX;
     for (let r = 0; r < cover.rows; r++)
@@ -404,9 +468,11 @@ function drawFloor() {
 }
 
 // ------------------------------------------------------------------ gear visuals
+const domes: THREE.Object3D[] = [];
 function buildGear() {
   clearGroup(gearGroup);
-  const showPlan = mode === "plan";
+  domes.length = 0;
+  const showPlan = mode === "plan" || (mode === "tour" && tourCover);
   for (const g of gears) {
     if (g.kind === "overhead") {
       const y = mountY(L, g.x);
@@ -416,6 +482,7 @@ function buildGear() {
       const lens = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), mat(0x111111));
       lens.position.set(g.x, y - 0.12, g.z);
       gearGroup.add(dome, lens);
+      domes.push(dome);
       if (showPlan) {
         const f = footprint(L, g);
         const pts: number[] = [];
@@ -459,10 +526,12 @@ function gearChanged(saveIt = true) {
   flock.cover = cover;
   flock.doorCam = coversDoor(L, gears);
   flock.feedCam = coversFeedStore(L, gears);
+  staff.eggCamera = coversEggTable(L, gears);
   flock.setSensors(gears.filter((g) => g.kind === "sensor").map((g) => ({ x: g.x, z: g.z })));
   buildGear();
   drawFloor();
   renderPanel();
+  if (mode === "monitor") buildFeeds();
   if (saveIt) persist();
 }
 
@@ -592,12 +661,63 @@ function walkTo(x: number, z: number) {
   player.moving = true;
 }
 
+let playerHeading = Math.PI;
+
+/** A floating sign above a worker saying what they are doing (house view only, never in camera pictures). */
+function workerTag(): THREE.Sprite {
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 72;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  s.scale.set(3.6, 0.5, 1);
+  s.center.set(0.5, 0);
+  s.renderOrder = 11;
+  labels.push(s);
+  return s;
+}
+function writeTag(s: THREE.Sprite, name: string, doing: string, color: string) {
+  const tex = (s.material as THREE.SpriteMaterial).map as THREE.CanvasTexture;
+  const c = tex.image as HTMLCanvasElement;
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, c.width, c.height);
+  const text = doing ? `${name} · ${doing}` : name;
+  ctx.font = "bold 38px system-ui, Arial";
+  const w = Math.min(c.width, ctx.measureText(text).width + 40);
+  const x0 = (c.width - w) / 2;
+  ctx.fillStyle = "rgba(28,24,20,.82)";
+  ctx.beginPath(); ctx.roundRect(x0, 4, w, 62, 16); ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x0 + 22, 35, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x0 + 38, 37, w - 46);
+  tex.needsUpdate = true;
+}
+
+function updateCrew(t: number) {
+  staff.benched = mode === "play" ? (role === "doctor" ? 2 : role === "eggs" || role === "litter" ? 0 : -1) : -1;
+  staff.workers.forEach((w, k) => {
+    const c = crew[k];
+    if (!c) return;
+    posePerson(c.p, w.x, w.z, w.heading, w.pose, w.carry, t);
+    c.tag.visible = w.pose !== "away";
+    c.tag.position.set(c.p.root.position.x, 2.05, c.p.root.position.z);
+    const text = w.doing || " ";
+    if (text !== c.text) {
+      c.text = text;
+      writeTag(c.tag, w.name, w.doing, w.role === "vet" ? "#ffffff" : w.side < 0 ? "#4f8fe0" : "#5fbf6f");
+    }
+  });
+}
+
 function updatePlayer(dt: number) {
   const visible = mode === "play" && role !== "manager";
   playerMesh.visible = visible;
   jobRing.visible = false;
   if (!visible) return;
-  ((playerMesh.getObjectByName("body") as THREE.Mesh).material as THREE.MeshLambertMaterial).color.setHex(ROLES[role].color);
+  playerPerson.coatMat.color.setHex(ROLES[role].color === 0xffffff ? 0xf4f4f4 : ROLES[role].color);
+  playerPose = player.moving ? "walk" : "stand";
   if (player.job?.kind === "bird") {
     const i = player.job.i;
     player.tx = flock.x[i]; player.tz = flock.z[i]; player.moving = true;
@@ -613,16 +733,18 @@ function updatePlayer(dt: number) {
       if (stopAt < 0.1) { player.x = player.tx; player.z = player.tz; }
       player.moving = false;
       arrive();
+      const next = player.route.shift();
+      if (next) walkTo(next.x, next.z);
     } else {
       player.x += (dx / d) * step; player.z += (dz / d) * step;
-      playerMesh.rotation.y = Math.atan2(dx, dz);
+      playerHeading = Math.atan2(dx, dz);
     }
   }
   if (player.job?.kind === "rake") {
     const j = player.job;
     if (!player.moving) {
       j.t -= dt;
-      playerMesh.rotation.y += dt * 6;
+      playerPose = "rake";
       if (j.t <= 0) {
         flock.rake(j.x, j.z);
         player.job = null;
@@ -631,12 +753,13 @@ function updatePlayer(dt: number) {
       }
     }
   }
-  playerMesh.position.set(player.x, 0, player.z);
+  posePerson(playerPerson, player.x, player.z, playerHeading, playerPose, playerPose === "rake" ? "rake" : player.eggs ? "tray" : player.dead ? "bag" : "", performance.now() / 1000);
 
   // Egg collector picks up anything within reach.
   if (role === "eggs") {
     const got = flock.collectNear(player.x, player.z, 1.1);
     if (got) player.eggs += got;
+    if (player.eggs >= EGG_CART) player.route = [];
     const et = center(L.eggTable);
     if (player.eggs && Math.hypot(player.x - et.x, player.z - et.z) < 1.9) {
       const r = flock.deliver(player.eggs, coversEggTable(L, gears));
@@ -703,6 +826,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
 
 let nextGearId = 1000;
 function onTap(x: number, z: number) {
+  if (mode === "tour") return;
   if (mode === "plan") {
     if (tool === "remove") {
       let best = -1, bd = 2.2;
@@ -747,8 +871,8 @@ const fmtT = (t: number) => {
 };
 
 function renderPanel() {
-  if (mode === "plan") renderPlan();
-  else renderPlay();
+  if (mode === "play") renderPlay();
+  else renderPlan();
 }
 
 function renderPlan() {
@@ -895,21 +1019,9 @@ panel.addEventListener("change", (e) => {
   if (t.id === "rot") rot = Number(t.value) as 0 | 1;
 });
 
-document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) =>
-  b.addEventListener("click", () => {
-    mode = b.dataset.mode as Mode;
-    document.querySelectorAll("[data-mode]").forEach((x) => x.classList.toggle("on", x === b));
-    if (mode === "play" && overlay === "coverage") overlay = "none";
-    buildGear();
-    drawFloor();
-    renderPanel();
-    if (mode === "play") toast(`Playing as ${ROLES[role].name}. Tap the floor to walk.`);
-  }),
-);
 document.querySelectorAll<HTMLButtonElement>("[data-speed]").forEach((b) =>
   b.addEventListener("click", () => {
-    speed = Number(b.dataset.speed);
-    document.querySelectorAll("[data-speed]").forEach((x) => x.classList.toggle("on", x === b));
+    setSpeed(Number(b.dataset.speed));
   }),
 );
 
@@ -920,10 +1032,671 @@ function rebuildAll(regear: boolean) {
   const weeks = flock.weeks;
   flock = new Flock(L);
   flock.setWeeks(weeks);
+  staff = new Staff(L, flock);
   lastWeeks = -1;
   buildWorld();
   gearChanged(regear);
   frameHouse();
+}
+
+
+// ------------------------------------------------------------------ guided experience
+// The start menu, the camera tour and one clear task at a time for each job.
+// Everything technical stays in the "More details" panel.
+const menuEl = document.getElementById("menu")!;
+const cardEl = document.getElementById("card")!;
+const detailsBtn = document.getElementById("detailsBtn")!;
+let tourStep = 0;
+let tourCover = true;
+let follow = false;
+let stashed: Gear | null = null;
+let pulse = false;
+
+function niceTime(): string {
+  const m = Math.floor(flock.minuteOfDay());
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, "0");
+  return `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "am" : "pm"}`;
+}
+
+function setSpeed(v: number) {
+  speed = v;
+  document.querySelectorAll<HTMLElement>("[data-speed]").forEach((x) => x.classList.toggle("on", Number(x.dataset.speed) === v));
+}
+
+function showDetails(on: boolean) {
+  panel.classList.toggle("hidden", !on);
+  detailsBtn.classList.toggle("on", on);
+  if (on) renderPanel();
+  // On phones the details sheet and the card share the bottom of the screen.
+  if (window.innerWidth <= 720) cardEl.classList.toggle("hidden", on || mode === "plan");
+}
+detailsBtn.addEventListener("click", () => showDetails(panel.classList.contains("hidden")));
+document.getElementById("menuBtn")!.addEventListener("click", showMenu);
+
+function showMenu() {
+  restoreStash();
+  menuEl.classList.remove("hidden");
+  setSpeed(0);
+}
+
+function flyTo(x: number, z: number, dist: number, height = 0.75) {
+  controls.target.set(x, 0, z);
+  const dir = V(0, height, 0.65).normalize().multiplyScalar(dist);
+  camera.position.set(x + dir.x, dir.y, z + dir.z);
+  controls.update();
+}
+
+function restoreStash() {
+  if (stashed) { gears.push(stashed); stashed = null; gearChanged(false); }
+}
+
+menuEl.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("[data-start]") as HTMLElement | null;
+  if (!b) return;
+  menuEl.classList.add("hidden");
+  const what = b.dataset.start!;
+  follow = false;
+  player.job = null;
+  setMonitor(what === "monitor");
+  if (what === "monitor") return;
+  if (what === "tour") { mode = "tour"; tourStep = 0; showDetails(false); renderTour(); }
+  else if (what === "plan") {
+    mode = "plan"; overlay = "coverage";
+    cardEl.classList.add("hidden");
+    buildGear(); drawFloor(); showDetails(true); frameHouse(); setSpeed(1);
+    toast("Pick a camera type in the panel, then tap the floor to place it");
+  } else startJob(what as Role);
+});
+
+// ---- tour
+type TourStep = { title: string; text: string; go: () => void };
+const pc = () => L.pc;
+const firstPenCam = () => gears.find((g) => g.kind === "overhead");
+const TOUR: TourStep[] = [
+  { title: "The poultry house", text: "This is EcoGreen's poultry house: 20 m wide and 55 m long, with 7,000 hens in 4 pens. Drag to look around. Pinch or scroll to zoom.",
+    go: () => { tourCover = false; frameHouse(); } },
+  { title: "Cameras in the roof", text: "", go: () => {
+      tourCover = false; pulse = true;
+      const g = firstPenCam(); if (g) flyTo(g.x, g.z + 4, 20, 0.55);
+    } },
+  { title: "What each camera sees", text: "", go: () => { tourCover = true; frameHouse(); } },
+  { title: "Blind spots", text: "Watch: we take one camera away. Its patch of floor turns red. A sick or dead hen there would not be noticed by anyone until it is too late.",
+    go: () => {
+      tourCover = true;
+      const k = gears.findIndex((g) => g.kind === "overhead");
+      if (k >= 0 && !stashed) { stashed = gears.splice(k, 1)[0]; gearChanged(false); }
+      if (stashed) flyTo(stashed.x, stashed.z, 26);
+    } },
+  { title: "Spotting sick and dead hens", text: "The computer watches how much every hen moves. A hen that stands still for 30 minutes gets an orange ! above her. A dead hen gets a red ✖. The doctor gets an alert on their phone.",
+    go: () => {
+      tourCover = false; setSpeed(5);
+      const a = flock.alerts.find((q) => !q.done && (q.kind === "sick" || q.kind === "dead"));
+      if (a) flyTo(a.x, a.z, 14); else frameHouse();
+    } },
+  { title: "Who comes in", text: "A camera over each door records who comes in and when: workers, the vet and visitors. No more guessing when the hens were last checked.",
+    go: () => { tourCover = false; flyTo(L.mainDoor.x, L.mainDoor.z - 2, 14); } },
+  { title: "Counting eggs", text: "Eggs are collected in trays and put on this table. A camera above it counts every egg and spots cracked ones, so the numbers go straight into the ERP.",
+    go: () => { tourCover = false; const c = center(L.eggTable); flyTo(c.x, c.z, 10); } },
+  { title: "Air sensors", text: "Small yellow sensors hang in each pen and measure ammonia, the sharp smell that comes from wet bedding. Too much of it makes hens sick, so the floor keeper is warned early.",
+    go: () => { tourCover = false; const g = gears.find((q) => q.kind === "sensor"); if (g) flyTo(g.x, g.z, 12); } },
+  { title: "One computer runs it all", text: "Every camera plugs into one network switch and one computer in the corner. The computer runs the AI on the farm, so it keeps working even if the internet drops.",
+    go: () => { tourCover = false; flyTo(pc().x - 1, pc().z, 10); } },
+  { title: "What to buy", text: "", go: () => { tourCover = true; frameHouse(); } },
+];
+
+function tourText(i: number): string {
+  const roof = gears.filter((g) => g.kind === "overhead").length + (stashed ? 1 : 0);
+  if (i === 1) return `${roof} cameras hang from the roof beams, about ${mountY(L, L.hw / 2).toFixed(0)} m up, looking straight down at the hens. They are the white domes you see pulsing.`;
+  if (i === 2) {
+    const f = firstPenCam() ? footprint(L, firstPenCam()!) : null;
+    const size = f ? `about ${Math.round(f.x1 - f.x0)} × ${Math.round(f.z1 - f.z0)} m` : "a patch";
+    return `Each camera sees ${size} of floor. Blue floor means a camera can see it. Together they cover ${pctOf(cover.stats().total)} of the pens, so no hen is out of sight.`;
+  }
+  return TOUR[i].text;
+}
+const pctOf = (v: number) => `${Math.round(v * 100)}%`;
+
+function buyList(): string {
+  const n = (k: GearKind) => gears.filter((g) => g.kind === k).length + (stashed && stashed.kind === k ? 1 : 0);
+  const cams = n("overhead") + n("door") + n("egg");
+  const cable = shopping(L, gears).find((l) => l.item.startsWith("Cat6"));
+  return `<ul class="buy">
+    <li><b>${cams} cameras</b>: ${n("overhead")} for the roof, ${n("door")} for the doors, ${n("egg")} for the egg table</li>
+    <li><b>${n("sensor")} air sensors</b> (ammonia, temperature, humidity)</li>
+    <li><b>1 network switch</b> that powers the cameras through the cable</li>
+    <li><b>1 AI computer</b> with a backup battery (UPS)</li>
+    ${cable ? `<li><b>${cable.note?.replace("about ", "About ").replace(" of runs", "")} of cable</b> in plastic pipe, so rats can't chew it</li>` : ""}
+  </ul>`;
+}
+
+function renderTour() {
+  cardEl.classList.remove("hidden");
+  pulse = false;
+  if (tourStep !== 3) restoreStash();
+  TOUR[tourStep].go();
+  if (tourStep !== 4) setSpeed(1);
+  buildGear();
+  drawFloor();
+  const last = tourStep === TOUR.length - 1;
+  cardEl.innerHTML = `
+    <div class="steps">How the cameras work · ${tourStep + 1} of ${TOUR.length}</div>
+    <h2>${TOUR[tourStep].title}</h2>
+    ${last ? `<p>Everything the farm needs, worked out from the house size:</p>${buyList()}` : `<p>${tourText(tourStep)}</p>`}
+    <div class="acts">
+      ${tourStep > 0 ? `<button class="btn ghost" data-tour="back">Back</button>` : ""}
+      ${last ? `<button class="btn" data-tour="jobs">Try a job</button><button class="btn ghost" data-tour="plan">Change the plan</button>`
+             : `<button class="btn" data-tour="next">Next</button>`}
+    </div>`;
+}
+
+cardEl.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("[data-tour],[data-task]") as HTMLElement | null;
+  if (!b) return;
+  const t = b.dataset.tour;
+  if (t === "next") { tourStep = Math.min(TOUR.length - 1, tourStep + 1); renderTour(); }
+  else if (t === "back") { tourStep = Math.max(0, tourStep - 1); renderTour(); }
+  else if (t === "jobs") { restoreStash(); showMenu(); }
+  else if (t === "plan") {
+    restoreStash(); mode = "plan"; cardEl.classList.add("hidden"); buildGear(); drawFloor(); showDetails(true);
+  } else if (b.dataset.task) runTask(b.dataset.task);
+});
+
+// ---- jobs
+let taskAction: Record<string, () => void> = {};
+function runTask(k: string) { taskAction[k]?.(); updateCard(true); }
+
+function startJob(r: Role) {
+  restoreStash();
+  mode = "play";
+  role = r;
+  overlay = "none";
+  truth = false;
+  showDetails(false);
+  if (r === "eggs" && !flock.laying) {
+    flock.setWeeks(24);
+    flock.fillNests();
+    toast("The hens are now 24 weeks old and have laid this morning's eggs");
+  }
+  if (r === "manager") { follow = false; frameHouse(); }
+  else {
+    follow = true;
+    player.x = L.mainDoor.x; player.z = L.mainDoor.z - 1.2;
+    flyTo(player.x, player.z - 3, 16, 0.8);
+  }
+  setSpeed(1);
+  buildGear();
+  drawFloor();
+  cardEl.classList.remove("hidden");
+  updateCard(true);
+}
+
+let lastCard = "";
+function updateCard(force = false) {
+  if (mode !== "play" || cardEl.classList.contains("hidden") && !force) return;
+  taskAction = {};
+  const html = cardFor(role);
+  if (html !== lastCard || force) { cardEl.innerHTML = html; lastCard = html; }
+}
+
+const btn = (key: string, label: string, act: () => void, ghost = false) => {
+  taskAction[key] = act;
+  return `<button class="btn ${ghost ? "ghost" : ""}" data-task="${key}">${label}</button>`;
+};
+const head = (who: string, title: string) => `<div class="who">${who}</div><h2>${title}</h2>`;
+const fastBtn = () => btn("fast", "Speed up time ▶▶", () => setSpeed(5), true);
+
+function openAlerts(kinds: string[]) {
+  return flock.alerts.filter((a) => !a.done && kinds.includes(a.kind) && (a.bird < 0 || flock.st[a.bird] !== GONE));
+}
+function nearest<T extends { x: number; z: number }>(list: T[]): T | undefined {
+  let best: T | undefined, bd = Infinity;
+  for (const a of list) { const d = Math.hypot(a.x - player.x, a.z - player.z); if (d < bd) { bd = d; best = a; } }
+  return best;
+}
+const where = (x: number, z: number) => flock.penName(x, z);
+const goBird = (i: number) => () => { player.job = { kind: "bird", i }; };
+const goDoor = () => { player.job = null; walkTo(L.mainDoor.x, L.mainDoor.z - 1); };
+
+function cardFor(r: Role): string {
+  if (r === "doctor") {
+    const done = `<div class="progress">Treated: ${flock.stats.treated} · Dead hens removed: ${flock.stats.removed}</div>`;
+    if (player.dead) return head("Doctor", "Take the dead hen out") +
+      `<p>You are carrying ${player.dead} dead hen${player.dead > 1 ? "s" : ""}. Take ${player.dead > 1 ? "them" : "her"} out of the main door so disease doesn't spread.</p><div class="acts">${btn("door", "Walk to the door", goDoor)}</div>` + done;
+    if (player.job?.kind === "bird") return head("Doctor", "On your way") + `<p>Walking to the hen the camera flagged...</p>` + done;
+    const a = nearest(openAlerts(["sick", "dead"]).map((q) => ({ ...q, x: flock.x[q.bird], z: flock.z[q.bird] })));
+    if (a && a.kind === "dead") return head("Doctor", "A hen has died") +
+      `<p>The camera sees a hen lying still in ${where(a.x, a.z)}, marked with a red ✖. Pick her up before the others peck at her.</p><div class="acts">${btn("go", "Go and pick her up", goBird(a.bird))}</div>` + done;
+    if (a) return head("Doctor", "A hen isn't moving") +
+      `<p>The camera spotted a hen in ${where(a.x, a.z)} that has hardly moved for 30 minutes (orange !). Go and check her. If she's sick you'll treat her.</p><div class="acts">${btn("go", "Go and check her", goBird(a.bird))}</div>` + done;
+    return head("Doctor", "All hens look fine") + `<p>No alerts right now. Speed up time and wait for the cameras to spot something.</p><div class="acts">${fastBtn()}</div>` + done;
+  }
+  if (r === "eggs") {
+    const et = center(L.eggTable);
+    const done = `<div class="progress">Eggs counted at the table: ${flock.stats.aiEggs.toLocaleString()}${flock.stats.cracked ? ` (${flock.stats.cracked} cracked)` : ""}</div>`;
+    let best = -1;
+    L.nests.forEach((n, k) => { if (flock.nestEggs[k] && (best < 0 || flock.nestEggs[k] > flock.nestEggs[best])) best = k; });
+    let inNests = 0;
+    for (let k = 0; k < flock.nestEggs.length; k++) inNests += flock.nestEggs[k];
+    const floor = flock.floorEggs.length;
+    if (player.eggs >= EGG_CART || (player.eggs && best < 0 && !floor)) return head("Egg collector", "Your cart is full") +
+      `<p>You have ${player.eggs} eggs. Put them on the egg table, where the camera counts them.</p><div class="acts">${btn("table", "Walk to the egg table", () => walkTo(et.x, et.z - 1.2))}</div>` + done;
+    if (best >= 0) {
+      const n = L.nests[best];
+      const pen = L.pens[n.pen];
+      const collectRow = () => {
+        // Walk the row of boxes on that wall, nearest end first.
+        const row = L.nests.filter((q, k) => q.pen === n.pen && q.x === n.x && flock.nestEggs[k] > 0)
+          .map((q) => ({ x: q.x + (q.x < 0 ? 0.9 : -0.9), z: q.z }));
+        row.sort((a, b2) => a.z - b2.z);
+        if (Math.abs(row[row.length - 1].z - player.z) < Math.abs(row[0].z - player.z)) row.reverse();
+        player.job = null;
+        player.route = row;
+        const first = player.route.shift()!;
+        walkTo(first.x, first.z);
+      };
+      return head("Egg collector", "Eggs are waiting") +
+        `<p>${inNests.toLocaleString()} eggs are in the nest boxes along the walls${floor ? `, and ${floor} were laid on the floor (pick those up before they get dirty)` : ""}. Your cart holds ${EGG_CART} eggs (12 trays).</p>
+        <div class="acts">${player.route.length ? "" : btn("nest", `Collect from the ${pen.name} boxes`, collectRow)}${player.eggs ? btn("table", `Deliver ${player.eggs} eggs`, () => { player.route = []; walkTo(et.x, et.z - 1.2); }, !!player.route.length || player.eggs < EGG_CART) : ""}</div>` + done;
+    }
+    if (floor) {
+      const f = nearest(flock.floorEggs)!;
+      return head("Egg collector", "Eggs on the floor") + `<p>${floor} eggs were laid on the floor. Pick them up before they get dirty or broken.</p><div class="acts">${btn("floor", "Go to the nearest one", () => walkTo(f.x, f.z))}</div>` + done;
+    }
+    return head("Egg collector", "No eggs waiting") + `<p>Hens lay mostly between 6 and 11 in the morning. Speed up time to the next morning.</p><div class="acts">${fastBtn()}</div>` + done;
+  }
+  if (r === "litter") {
+    const done = `<div class="progress">Darker floor = wetter bedding. Wet spots come from leaky drinkers.</div>`;
+    if (player.dead) return head("Floor keeper", "Take the dead hen out") + `<p>Take the dead hen out of the main door.</p><div class="acts">${btn("door", "Walk to the door", goDoor)}</div>` + done;
+    if (player.job?.kind === "rake") return head("Floor keeper", "Raking") + `<p>Raking the wet bedding and adding dry bedding on top...</p>` + done;
+    const w = nearest(openAlerts(["wet"]));
+    if (w) return head("Floor keeper", "Wet bedding spotted") +
+      `<p>The camera sees a dark, wet patch in ${where(w.x, w.z)}. Wet bedding makes ammonia, which makes hens sick. Rake it and add dry bedding.</p><div class="acts">${btn("rake", "Go and rake it", () => { player.job = { kind: "rake", x: w.x, z: w.z, t: 2 }; walkTo(w.x, w.z); })}</div>` + done;
+    const d = nearest(openAlerts(["dead"]).map((q) => ({ ...q, x: flock.x[q.bird], z: flock.z[q.bird] })));
+    if (d) return head("Floor keeper", "A dead hen") + `<p>Pick up the dead hen in ${where(d.x, d.z)}.</p><div class="acts">${btn("go", "Go and pick her up", goBird(d.bird))}</div>` + done;
+    return head("Floor keeper", "The floor is dry") + `<p>Nothing to do right now. Tap any dark patch to rake it, or speed up time.</p><div class="acts">${fastBtn()}</div>` + done;
+  }
+  // Manager: the whole farm in a few plain lines.
+  let alive = 0, sick = 0, dead = 0;
+  for (let i = 0; i < flock.n; i++) {
+    const st = flock.st[i];
+    if (st === GONE) continue;
+    if (st === DEAD) { if (flock.flag[i] & 2 || truth) dead++; continue; }
+    alive++;
+    if (flock.flag[i] & 1 || truth && st === SICK) sick++;
+  }
+  let ppm = 0;
+  for (const p of flock.sensors) ppm = Math.max(ppm, flock.ammonia(p.x, p.z));
+  const days = Math.floor(Math.max(0, flock.stats.feedBags) / Math.max(1, Math.ceil((alive * 0.11) / 50)));
+  const wet = openAlerts(["wet"]).length;
+  const last = flock.log[0];
+  return head("Manager", "The farm right now") + `<ul class="sum">
+      <li><span class="i">🐔</span><span>${alive.toLocaleString()} hens alive</span></li>
+      <li><span class="i">${sick ? "⚠️" : "✅"}</span><span>${sick ? `${sick} hen${sick > 1 ? "s" : ""} not moving, doctor alerted` : "No hens look sick"}</span></li>
+      <li><span class="i">${dead ? "✖" : "✅"}</span><span>${dead ? `${dead} dead hen${dead > 1 ? "s" : ""} to remove` : "No dead hens"}</span></li>
+      <li><span class="i">🥚</span><span>${flock.laying ? `${flock.today.laid.toLocaleString()} eggs laid today, ${flock.today.delivered.toLocaleString()} counted at the table` : "Too young to lay yet"}</span></li>
+      <li><span class="i">🌾</span><span>Feed store: ${Math.max(0, flock.stats.feedBags)} bags, about ${days} days left</span></li>
+      <li><span class="i">${ppm > 20 || wet ? "⚠️" : "✅"}</span><span>${ppm > 20 ? "Air smells of ammonia, check the bedding" : wet ? `${wet} wet bedding patch${wet > 1 ? "es" : ""} to rake` : "Air and bedding are fine"}</span></li>
+      ${last ? `<li><span class="i">🚪</span><span>${esc(last.text)}</span></li>` : ""}
+    </ul>
+    <div class="acts">${btn("truth", truth ? "Show only what cameras see" : "What did the cameras miss?", () => { truth = !truth; }, true)}${btn("feed", overlay === "feeders" ? "Hide feeder activity" : "Show busy feeders", () => { overlay = overlay === "feeders" ? "none" : "feeders"; toast(overlay === "feeders" ? "Red feeders are busy, blue ones are quiet, grey ones no camera sees" : "Feeder colours off"); }, true)}</div>
+    <div class="acts" style="margin-top:8px">${fastBtn()}</div>`;
+}
+
+// ---- floating icons above flagged hens and wet patches
+function iconMaterial(text: string, bg: string): THREE.SpriteMaterial {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(64, 64, 56, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 8; ctx.strokeStyle = "#fff"; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.font = "bold 76px system-ui, Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(text, 64, 70);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true });
+}
+const ICONS = { sick: iconMaterial("!", "#f57c00"), dead: iconMaterial("✖", "#d32f2f"), wet: iconMaterial("≈", "#6d4c41"), miss: iconMaterial("?", "#7e57c2") };
+const iconPool: THREE.Sprite[] = [];
+const iconGroup = new THREE.Group();
+scene.add(iconGroup);
+function updateIcons(t: number) {
+  let k = 0;
+  const put = (x: number, z: number, m: THREE.SpriteMaterial) => {
+    if (k >= 80) return;
+    let s = iconPool[k];
+    if (!s) { s = new THREE.Sprite(m); s.renderOrder = 12; iconPool.push(s); iconGroup.add(s); }
+    s.material = m;
+    s.visible = true;
+    const size = follow ? 0.9 : 1.6;
+    s.scale.set(size, size, 1);
+    s.position.set(x, 1.3 + Math.sin(t * 3 + k) * 0.15 + (follow ? 0 : 0.8), z);
+    k++;
+  };
+  if (mode !== "plan") {
+    for (const a of flock.alerts) {
+      if (a.done) continue;
+      if ((a.kind === "sick" || a.kind === "dead") && a.bird >= 0 && flock.st[a.bird] !== GONE) put(flock.x[a.bird], flock.z[a.bird], ICONS[a.kind]);
+      else if (a.kind === "wet" && mode === "play") put(a.x, a.z, ICONS.wet);
+    }
+    if (truth) for (let i = 0; i < flock.n; i++) {
+      const st = flock.st[i];
+      if ((st === SICK && !(flock.flag[i] & 1)) || (st === DEAD && !(flock.flag[i] & 2))) put(flock.x[i], flock.z[i], ICONS.miss);
+    }
+  }
+  for (let j = k; j < iconPool.length; j++) iconPool[j].visible = false;
+}
+
+// Keep the worker in view while they walk, without fighting the player's own drags.
+let tourFocused = -1;
+function followPlayer(dt: number) {
+  if (mode === "tour" && tourStep === 4 && tourFocused !== 4) {
+    const a = flock.alerts.find((q) => !q.done && (q.kind === "sick" || q.kind === "dead") && q.bird >= 0);
+    if (a) { tourFocused = 4; flyTo(flock.x[a.bird], flock.z[a.bird], 12); }
+  }
+  if (mode === "tour" && tourStep !== 4) tourFocused = -1;
+  if (!follow || mode !== "play" || role === "manager" || !player.moving) return;
+  const want = V(player.x, 0, player.z);
+  const delta = want.sub(controls.target).multiplyScalar(Math.min(1, dt * 2.5));
+  controls.target.add(delta);
+  camera.position.add(delta);
+}
+
+function pulseDomes(t: number) {
+  const s = pulse ? 1.3 + 0.4 * (0.5 + 0.5 * Math.sin(t * 5)) : 1;
+  for (const d of domes) d.scale.setScalar(s);
+}
+
+
+// ------------------------------------------------------------------ camera monitor
+// What each camera actually sees, rendered from the camera's own position and lens,
+// with the AI's marks drawn on top. This is the farm office screen.
+const monitorEl = document.getElementById("monitor")!;
+const feedBox = document.getElementById("feedBox")!;
+const aiCanvas = document.getElementById("ai") as HTMLCanvasElement;
+const aiCtx = aiCanvas.getContext("2d")!;
+const thumbsEl = document.getElementById("thumbs")!;
+const feedInfo = document.getElementById("feedInfo")!;
+const feedCam = new THREE.PerspectiveCamera(70, 16 / 9, 0.05, 80);
+const thumbCam = new THREE.PerspectiveCamera(70, 16 / 9, 0.05, 80);
+let feedList: Gear[] = [];
+let feedSel = 0;
+let thumbTurn = 0;
+let fullRedraw = true;
+let showBoxes = true;
+let infoT = 0;
+const START_DAY = Date.UTC(2026, 10, 2);
+
+function setMonitor(on: boolean) {
+  monitorEl.classList.toggle("hidden", !on);
+  controls.enabled = !on;
+  if (!on) {
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, renderer.domElement.clientWidth, renderer.domElement.clientHeight);
+    return;
+  }
+  restoreStash();
+  mode = "monitor";
+  overlay = "none";
+  cardEl.classList.add("hidden");
+  showDetails(false);
+  menuEl.classList.add("hidden");
+  setSpeed(1);
+  drawFloor();
+  buildFeeds();
+}
+monitorEl.addEventListener("scroll", () => (fullRedraw = true));
+window.addEventListener("resize", () => (fullRedraw = true));
+
+function feedName(i: number): string {
+  const g = feedList[i];
+  const n = `CAM ${String(i + 1).padStart(2, "0")}`;
+  if (g.kind === "overhead") return `${n} · ${flock.penName(g.x, g.z).toUpperCase()}`;
+  if (g.kind === "egg") return `${n} · EGG TABLE`;
+  return `${n} · ${isBackDoor(g) ? "BACK DOOR" : "MAIN DOOR"}`;
+}
+const isBackDoor = (g: Gear) => Math.hypot(g.x - L.backDoor.x, g.z - L.backDoor.z) < Math.hypot(g.x - L.mainDoor.x, g.z - L.mainDoor.z);
+
+function buildFeeds() {
+  const order: Record<string, number> = { overhead: 0, door: 1, egg: 2 };
+  feedList = gears.filter((g) => g.kind !== "sensor").sort((a, b) =>
+    order[a.kind] - order[b.kind] || flock.penAt(a.x, a.z) - flock.penAt(b.x, b.z) || b.z - a.z || a.x - b.x);
+  feedSel = Math.min(feedSel, Math.max(0, feedList.length - 1));
+  thumbsEl.innerHTML = feedList.map((_, i) => `<button class="thumb ${i === feedSel ? "on" : ""}" data-feed="${i}"><span>${esc(feedName(i))}</span><i class="hidden"></i></button>`).join("");
+  fullRedraw = true;
+  infoT = 0;
+}
+thumbsEl.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("[data-feed]") as HTMLElement | null;
+  if (!b) return;
+  feedSel = Number(b.dataset.feed);
+  thumbsEl.querySelectorAll(".thumb").forEach((t, i) => t.classList.toggle("on", i === feedSel));
+  infoT = 0;
+  if (window.innerWidth <= 860) monitorEl.scrollTo({ top: 0, behavior: "smooth" });
+});
+feedInfo.addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest("[data-boxes]")) { showBoxes = !showBoxes; infoT = 0; }
+});
+
+/** Point a camera exactly where the real one hangs, with the real lens. */
+function aimCamera(cam: THREE.PerspectiveCamera, g: Gear) {
+  cam.aspect = 16 / 9;
+  if (g.kind === "overhead") {
+    const hf = (LENS[g.lens].h * Math.PI) / 180;
+    cam.fov = (2 * Math.atan(Math.tan(hf / 2) / cam.aspect) * 180) / Math.PI;
+    cam.position.set(g.x, mountY(L, g.x) - 0.2, g.z);
+    if (g.rot === 0) cam.up.set(0, 0, -1); else cam.up.set(1, 0, 0);
+    cam.lookAt(g.x, 0, g.z);
+  } else if (g.kind === "door") {
+    const d = isBackDoor(g) ? L.backDoor : L.mainDoor;
+    const inward = d.z > 0 ? -1 : 1;
+    cam.fov = 62;
+    cam.up.set(0, 1, 0);
+    cam.position.set(d.x, 3.2, d.z + inward * 0.4);
+    cam.lookAt(d.x + 1.5, 0.4, d.z + inward * 8);
+  } else {
+    const c = center(L.eggTable);
+    cam.fov = 50;
+    cam.up.set(0, 1, 0);
+    cam.position.set(c.x, 2.5, c.z + 1.2);
+    cam.lookAt(c.x, 0.9, c.z);
+  }
+  cam.updateProjectionMatrix();
+}
+
+function renderMonitor(t: number) {
+  if (!feedList.length) { renderer.setScissorTest(false); renderer.clear(); return; }
+  const ch = renderer.domElement.clientHeight;
+  // Hide the planning aids: a real camera only sees the house and the hens.
+  const vis = [gearGroup.visible, iconGroup.visible, markerMesh.visible, jobRing.visible];
+  gearGroup.visible = iconGroup.visible = markerMesh.visible = jobRing.visible = false;
+  for (const l of labels) l.visible = false;
+  if (fullRedraw) { renderer.setScissorTest(false); renderer.setClearColor(0x1d1a16); renderer.clear(); }
+  renderer.setScissorTest(true);
+  const draw = (el: Element, cam: THREE.PerspectiveCamera) => {
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > ch || r.width < 4) return;
+    const y = ch - r.bottom;
+    renderer.setViewport(r.left, y, r.width, r.height);
+    renderer.setScissor(r.left, y, r.width, r.height);
+    renderer.render(scene, cam);
+  };
+  aimCamera(feedCam, feedList[feedSel]);
+  draw(feedBox, feedCam);
+  const thumbs = thumbsEl.children;
+  const n = fullRedraw ? feedList.length : Math.min(2, feedList.length);
+  for (let k = 0; k < n; k++) {
+    const i = thumbTurn++ % feedList.length;
+    aimCamera(thumbCam, feedList[i]);
+    if (thumbs[i]) draw(thumbs[i], thumbCam);
+  }
+  fullRedraw = false;
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, renderer.domElement.clientWidth, ch);
+  [gearGroup.visible, iconGroup.visible, markerMesh.visible, jobRing.visible] = vis;
+  for (const l of labels) l.visible = true;
+  drawAI(feedList[feedSel], t);
+  if ((infoT -= 1 / 60) <= 0) { infoT = 0.5; updateFeedInfo(); }
+}
+
+const v3 = new THREE.Vector3();
+function stamp(): string {
+  const d = new Date(START_DAY + flock.time * 60000);
+  const p = (x: number) => String(x).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+const inView = new Set<number>();
+
+function drawAI(g: Gear, t: number) {
+  const r = feedBox.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (aiCanvas.width !== W || aiCanvas.height !== H) { aiCanvas.width = W; aiCanvas.height = H; }
+  const ctx = aiCtx;
+  ctx.clearRect(0, 0, W, H);
+  const proj = (x: number, y: number, z: number) => {
+    v3.set(x, y, z).project(feedCam);
+    return { x: ((v3.x + 1) / 2) * W, y: ((1 - v3.y) / 2) * H, ok: v3.z < 1 && Math.abs(v3.x) <= 1 && Math.abs(v3.y) <= 1 };
+  };
+  const f = Math.max(11, Math.round(W / 70));
+  const placed: [number, number, number][] = [];
+  const tag = (x: number, y: number, text: string, bg: string) => {
+    ctx.font = `800 ${f}px system-ui, Arial`;
+    const w = ctx.measureText(text).width + f;
+    const tx = Math.min(W - w - 4, Math.max(4, x - w / 2));
+    let ty = Math.min(H - f * 1.6, Math.max(4, y - f * 1.9));
+    // Don't let two tags sit on top of each other.
+    for (let k = 0; k < 6 && placed.some((q) => tx < q[0] + q[2] && q[0] < tx + w && Math.abs(ty - q[1]) < f * 1.6); k++) ty += f * 1.7;
+    placed.push([tx, ty, w]);
+    ctx.fillStyle = bg;
+    ctx.fillRect(tx, ty, w, f * 1.5);
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, tx + f / 2, ty + f * 0.78);
+  };
+  inView.clear();
+  if (g.kind === "overhead") {
+    const a = proj(g.x, 0.1, g.z), b = proj(g.x + 1, 0.1, g.z);
+    const ppm = Math.hypot(b.x - a.x, b.y - a.y);
+    const hb = 0.24 * ppm;
+    ctx.lineWidth = Math.max(1, dpr);
+    ctx.strokeStyle = "rgba(110,255,150,.38)";
+    const flagged: number[] = [];
+    for (let i = 0; i < flock.n; i++) {
+      const st = flock.st[i];
+      if (st === GONE) continue;
+      const p = proj(flock.x[i], 0.1, flock.z[i]);
+      if (!p.ok) continue;
+      inView.add(i);
+      if (flock.flag[i]) { flagged.push(i); continue; }
+      if (st === DEAD) continue; // not noticed yet: the AI waits 10 minutes
+      if (showBoxes) ctx.strokeRect(p.x - hb, p.y - hb, hb * 2, hb * 2);
+    }
+    const blink = 0.6 + 0.4 * Math.sin(t * 6);
+    for (const i of flagged) {
+      const p = proj(flock.x[i], 0.1, flock.z[i]);
+      const dead = (flock.flag[i] & 2) !== 0;
+      const col = dead ? `rgba(244,67,54,${blink})` : `rgba(255,152,0,${blink})`;
+      ctx.lineWidth = 3 * dpr;
+      ctx.strokeStyle = col;
+      const bb = hb * 1.6;
+      ctx.strokeRect(p.x - bb, p.y - bb, bb * 2, bb * 2);
+      const mins = dead ? Math.round(flock.still[i]) : Math.round(flock.low[i]);
+      tag(p.x, p.y - bb, dead ? `DEAD · ${mins} min` : `NOT MOVING · ${mins} min`, dead ? "#d32f2f" : "#ef6c00");
+    }
+  } else if (g.kind === "door") {
+    // handled below with everyone else
+  } else {
+    const c = center(L.eggTable);
+    const a = proj(c.x - 0.9, 0.95, c.z - 0.45), b = proj(c.x + 0.9, 0.95, c.z + 0.45);
+    ctx.lineWidth = 2 * dpr; ctx.strokeStyle = "rgba(255,213,79,.9)";
+    ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    tag((a.x + b.x) / 2, Math.min(a.y, b.y), `EGGS COUNTED TODAY · ${flock.today.delivered.toLocaleString()}`, "#8d6e00");
+  }
+  // People: the AI boxes every person it sees and says who it is and what they are doing.
+  const people: { x: number; z: number; o: THREE.Object3D; name: string; doing: string }[] = [];
+  staff.workers.forEach((w, k) => { if (w.pose !== "away" && crew[k]) people.push({ x: w.x, z: w.z, o: crew[k].p.root, name: w.name, doing: w.doing }); });
+  if (playerMesh.visible) people.push({ x: player.x, z: player.z, o: playerMesh, name: `${ROLES[role].name} (you)`, doing: "" });
+  for (const q of people) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, seen = 0;
+    for (const dx of [-0.35, 0.35]) for (const dz of [-0.35, 0.35]) for (const y of [0, 1.8]) {
+      const pt = proj(q.x + dx, y, q.z + dz);
+      if (v3.z >= 1) continue;
+      if (pt.ok) seen++;
+      x0 = Math.min(x0, pt.x); x1 = Math.max(x1, pt.x); y0 = Math.min(y0, pt.y); y1 = Math.max(y1, pt.y);
+    }
+    if (!seen) continue;
+    x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(W, x1); y1 = Math.min(H, y1);
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = "#4fc3f7";
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    tag((x0 + x1) / 2, y0, `PERSON · ${q.name.toUpperCase()}${q.doing ? ` · ${q.doing}` : ""}`, "#0277bd");
+  }
+  // CCTV text, like the real recorder puts on screen.
+  ctx.font = `700 ${f}px ui-monospace, Menlo, monospace`;
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 4;
+  ctx.fillStyle = "#fff";
+  ctx.fillText(feedName(feedSel), f, f);
+  ctx.fillText(stamp(), f, H - f * 2.2);
+  if (Math.sin(t * 4) > -0.3) { ctx.fillStyle = "#ff3b30"; ctx.beginPath(); ctx.arc(W - f * 4.6, f * 1.55, f * 0.45, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = "#fff";
+  ctx.fillText("REC", W - f * 3.8, f);
+  if (g.kind === "overhead") {
+    let alive = 0;
+    for (const i of inView) if (flock.st[i] < DEAD) alive++;
+    const txt = `AI COUNT ${alive}`;
+    ctx.fillText(txt, W - ctx.measureText(txt).width - f, H - f * 2.2);
+  }
+  ctx.shadowBlur = 0;
+}
+
+function updateFeedInfo() {
+  const g = feedList[feedSel];
+  if (!g) { feedInfo.innerHTML = "<h2>No cameras placed</h2>"; return; }
+  // Alert badges on the thumbnails.
+  const badges = thumbsEl.querySelectorAll("i");
+  feedList.forEach((q, i) => {
+    let n = 0;
+    if (q.kind === "overhead") {
+      const fp = footprint(L, q);
+      for (const a of flock.alerts) if (!a.done && (a.kind === "sick" || a.kind === "dead") && a.bird >= 0 && flock.st[a.bird] !== GONE && inRect(fp, flock.x[a.bird], flock.z[a.bird])) n++;
+    }
+    const b = badges[i] as HTMLElement | undefined;
+    if (b) { b.textContent = String(n); b.classList.toggle("hidden", n === 0); }
+  });
+  if (g.kind === "overhead") {
+    const fp = footprint(L, g);
+    let alive = 0, sick = 0, dead = 0;
+    for (const i of inView) {
+      if (flock.st[i] < DEAD) alive++;
+      if (flock.flag[i] & 2) dead++; else if (flock.flag[i] & 1) sick++;
+    }
+    feedInfo.innerHTML = `
+      <h2>Roof camera ${feedSel + 1}</h2>
+      <div class="sub">${flock.penName(g.x, g.z)} · hangs ${mountY(L, g.x).toFixed(1)} m up · sees about ${Math.round(fp.x1 - fp.x0)} × ${Math.round(fp.z1 - fp.z0)} m of floor</div>
+      <div class="big">${alive.toLocaleString()}</div>
+      <div>hens counted in this picture</div>
+      <ul>
+        <li><span class="sw" style="border-color:#6eff96"></span><span>Green box: a hen the AI is counting and watching</span></li>
+        <li><span class="sw" style="border-color:#ff9800"></span><span>Orange: a hen that hasn't moved for 30 minutes. The doctor gets an alert.${sick ? ` <b>${sick} now.</b>` : ""}</span></li>
+        <li><span class="sw" style="border-color:#f44336"></span><span>Red: a dead hen. Someone is sent to remove her.${dead ? ` <b>${dead} now.</b>` : ""}</span></li>
+      </ul>
+      <div class="row"><button class="btn ghost" data-boxes>${showBoxes ? "Hide green boxes" : "Show green boxes"}</button></div>`;
+  } else if (g.kind === "door") {
+    const entries = flock.log.filter((l) => /entered|came in|left|took|refilled|delivery|eggs on the table/i.test(l.text)).slice(0, 5);
+    feedInfo.innerHTML = `
+      <h2>${isBackDoor(g) ? "Back" : "Main"} door camera</h2>
+      <div class="sub">Above the door, looking in</div>
+      <p>Records everyone who comes in and out: workers, the vet, visitors, and feed going out of the store.</p>
+      <ul>${entries.map((l) => `<li><span>${fmtT(l.t)}</span><span>${esc(l.text)}</span></li>`).join("") || "<li>Nobody yet today</li>"}</ul>`;
+  } else {
+    feedInfo.innerHTML = `
+      <h2>Egg table camera</h2>
+      <div class="sub">Above the table where trays are put down</div>
+      <div class="big">${flock.today.delivered.toLocaleString()}</div>
+      <div>eggs counted today${flock.stats.cracked ? `, ${flock.stats.cracked} cracked` : ""}</div>
+      <p style="color:var(--muted)">Every tray put on the table is counted automatically, so the ERP gets the number without anyone writing it down.</p>`;
+  }
 }
 
 // ------------------------------------------------------------------ loop
@@ -940,27 +1713,37 @@ function frame(now: number) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (!paused) {
-    if (speed > 0) flock.step(dt * speed);
+    if (speed > 0) {
+      // Small steps so a worker never jumps across the house at high speed.
+      let left = dt * speed;
+      while (left > 0) { const h = Math.min(left, 0.5); flock.step(h); staff.step(h); left -= h; }
+    }
     updatePlayer(dt);
+    updateCrew(now / 1000);
     const light = flock.lightsOn();
     hemi.intensity = light ? 1.7 : 0.35;
     sun.intensity = light ? 1.1 : 0.1;
     (scene.background as THREE.Color).setHex(light ? 0x2a2622 : 0x0d0c0b);
     updateBirds();
     updateFeeders();
+    updateIcons(now / 1000);
+    followPlayer(dt);
+    pulseDomes(now / 1000);
     uiT -= dt; floorT -= dt;
     if (toastT > 0 && (toastT -= dt) <= 0) toastEl.classList.remove("show");
     if (uiT <= 0) {
       uiT = 0.5;
-      clockEl.textContent = `Day ${flock.day()} ${flock.clock()}${light ? "" : " · lights off"}`;
-      ageEl.textContent = `Week ${flock.weeks} · ${flock.laying ? "laying hens" : "pullets"} · ${L.dims.width}×${L.dims.length} m`;
+      clockEl.textContent = `Day ${flock.day()} · ${niceTime()}${light ? "" : " · night"}`;
+      ageEl.textContent = flock.laying ? `Laying hens, ${flock.weeks} weeks old` : `Young hens, ${flock.weeks} weeks old`;
       updateStats();
+      updateCard();
       if (lastBags !== flock.stats.feedBags) { lastBags = flock.stats.feedBags; updateBags(); }
     }
     if (floorT <= 0) { floorT = 2; drawFloor(); }
   }
   controls.update();
-  renderer.render(scene, camera);
+  if (mode === "monitor") renderMonitor(now / 1000);
+  else renderer.render(scene, camera);
 }
 
 // ------------------------------------------------------------------ boot
@@ -974,6 +1757,7 @@ async function boot() {
       if (s.lens && s.lens in LENS) lens = s.lens;
       L = buildLayout(dims);
       flock = new Flock(L);
+      staff = new Staff(L, flock);
       if (Array.isArray(s.gears)) gears = s.gears.filter((g) => g && typeof g.x === "number" && inRect({ x0: -L.hw, x1: L.hw, z0: -L.hl, z1: L.hl }, g.x, g.z));
     }
   } catch {
@@ -982,8 +1766,20 @@ async function boot() {
   buildWorld();
   gearChanged(false);
   frameHouse();
+  setMonitor(true);
   P.firstFrameReady();
   requestAnimationFrame(frame);
   P.gameReady();
 }
 void boot();
+
+// Hook for automated screenshots and checks (harmless in normal play).
+(window as unknown as { __poultry: unknown }).__poultry = {
+  get staff() { return staff; },
+  get flock() { return flock; },
+  scene,
+  advance: (min: number) => { for (let t = 0; t < min; t += 0.25) { flock.step(0.25); staff.step(0.25); } },
+  feeds: () => feedList.map((g, i) => ({ i, kind: g.kind, x: g.x, z: g.z, fp: g.kind === "overhead" ? footprint(L, g) : null })),
+  pick: (i: number) => { feedSel = i; thumbsEl.querySelectorAll(".thumb").forEach((t, k) => t.classList.toggle("on", k === i)); infoT = 0; },
+  look: (x: number, z: number, dist: number, h = 0.5) => { setMonitor(false); mode = "tour"; cardEl.classList.add("hidden"); flyTo(x, z, dist, h); },
+};

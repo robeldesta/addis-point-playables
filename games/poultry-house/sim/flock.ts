@@ -129,11 +129,16 @@ export class Flock {
     }
     for (const d of L.drinkers) {
       const c = this.cell(d.x, d.z);
-      if (c >= 0) this.wet[c] = Math.min(1, this.wet[c] + 0.35 + 0.3 * r());
+      if (c >= 0) this.wet[c] = Math.min(1, this.wet[c] + 0.2 + 0.25 * r());
     }
 
     // Start with a few problems so every role has something to do.
-    for (let k = 0; k < 4; k++) this.makeSick(Math.floor(r() * n), 300 + r() * 600);
+    for (let k = 0; k < 4; k++) {
+      const i = Math.floor(r() * n);
+      this.makeSick(i, 300 + r() * 600);
+      // Already sitting still for a while, so the cameras notice within minutes.
+      this.mode[i] = REST; this.timer[i] = 120; this.act[i] = 0; this.low[i] = SICK_ALERT_MIN - 5 - k * 3;
+    }
     this.st[Math.floor(r() * n)] = DEAD;
   }
 
@@ -162,6 +167,21 @@ export class Flock {
     this.weeks = w;
     if (this.laying) this.planLaying(true);
     else this.layAt.fill(-1);
+  }
+
+  /** Put a morning's worth of eggs in the nest boxes, so the egg job can start straight away. */
+  fillNests(share = 0.6): void {
+    for (const p of this.L.pens) {
+      const nests = this.nestsByPen[p.id];
+      if (!p.active || !nests.length) continue;
+      let left = Math.round(p.birds * share);
+      this.stats.laid += left; this.today.laid += left;
+      for (let k = 0; left > 0; k = (k + 1) % nests.length) {
+        const add = Math.min(left, 1 + Math.floor(this.rand() * 4));
+        this.nestEggs[nests[k]] += add;
+        left -= add;
+      }
+    }
   }
 
   setSensors(points: Point[]): void {

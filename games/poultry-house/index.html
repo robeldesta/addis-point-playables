@@ -11,21 +11,42 @@
   <body>
     <div id="game"></div>
     <header id="top">
-      <div class="clock"><b id="clock">Day 1 06:00</b><small id="age">Week 10 · pullets</small></div>
-      <div class="tabs" role="tablist">
-        <button data-mode="plan" class="on">Plan gear</button>
-        <button data-mode="play">Play roles</button>
-      </div>
-      <div class="speed">
+      <button id="menuBtn" class="pill">☰ Menu</button>
+      <div class="clock"><b id="clock">Day 1 · 6:00 am</b><small id="age">Young hens</small></div>
+      <div class="speed" aria-label="Time speed">
         <button data-speed="0" title="Pause">❚❚</button>
-        <button data-speed="1" class="on">1×</button>
-        <button data-speed="5">5×</button>
-        <button data-speed="20">20×</button>
+        <button data-speed="1" class="on" title="Normal speed">▶</button>
+        <button data-speed="5" title="Fast">▶▶</button>
+        <button data-speed="20" title="Very fast">▶▶▶</button>
       </div>
+      <button id="detailsBtn" class="pill">More details</button>
     </header>
-    <aside id="panel"></aside>
+    <aside id="panel" class="hidden"></aside>
+    <section id="card" class="hidden"></section>
     <div id="carry"></div>
     <div id="toast"></div>
+    <div id="monitor">
+      <div class="mon-main">
+        <div id="feedBox"><canvas id="ai"></canvas><div class="vignette"></div></div>
+        <div id="thumbs"></div>
+      </div>
+      <aside id="feedInfo"></aside>
+    </div>
+    <div id="menu" class="hidden">
+      <div class="menuBox">
+        <h1>EcoGreen Poultry House</h1>
+        <p>7,000 hens in a 20 × 55 m house. See how the AI cameras watch the flock, then try each job on the farm.</p>
+        <button class="choice wide" data-start="monitor"><span class="ico">📺</span><b>Camera monitor</b><small>What every camera sees, with the AI's marks</small></button>
+        <button class="choice" data-start="tour" style="margin-bottom:10px"><span class="ico">🎥</span><b>How the cameras work</b><small>A short guided tour, 10 steps</small></button>
+        <div class="jobs">
+          <button class="choice" data-start="doctor"><span class="ico">🩺</span><b>Doctor</b><small>Find and treat sick hens</small></button>
+          <button class="choice" data-start="eggs"><span class="ico">🥚</span><b>Egg collector</b><small>Collect and count eggs</small></button>
+          <button class="choice" data-start="litter"><span class="ico">🧹</span><b>Floor keeper</b><small>Keep the bedding dry</small></button>
+          <button class="choice" data-start="manager"><span class="ico">📋</span><b>Manager</b><small>The whole farm at a glance</small></button>
+        </div>
+        <button class="linkbtn" data-start="plan">Change the camera plan myself</button>
+      </div>
+    </div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
