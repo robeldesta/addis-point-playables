@@ -44,7 +44,7 @@ let view: "house" | "cams" = "house";
 // ------------------------------------------------------------------ renderer
 P.initPlatform();
 const host = document.getElementById("game")!;
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: true }) // the camera wall redraws two thumbnails a frame and keeps the rest;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.autoClear = false;
 host.appendChild(renderer.domElement);
