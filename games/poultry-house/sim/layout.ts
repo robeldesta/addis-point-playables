@@ -32,6 +32,10 @@ export interface Rect { x0: number; z0: number; x1: number; z1: number }
 export interface Pen extends Rect { id: number; name: string; active: boolean; birds: number }
 export interface Spot { x: number; z: number; pen: number }
 export interface Point { x: number; z: number }
+/** An opening in a low pen wall. `outer` is the area on the +z side (towards the main door), `inner` the -z side. */
+export interface Gate { x: number; z: number; outer: number; inner: number }
+export const AISLE = -1;
+export const GATE_W = 1.2;
 
 export interface Layout {
   dims: Dims;
@@ -47,6 +51,7 @@ export interface Layout {
   backDoor: Point;
   eggTable: Rect;
   feedStore: Rect;
+  gates: Gate[];
   pc: Point;
 }
 
@@ -177,6 +182,44 @@ export function buildLayout(input: Dims): Layout {
     backDoor: { x: hw - Math.min(2.5, d.width * 0.12), z: -hl },
     eggTable: { x0: 1, x1: 3, z0: aisleMid - tableHalf, z1: aisleMid + tableHalf },
     feedStore: { x0: -hw + 0.3, x1: -hw + 3.3, z0: front + 0.3, z1: front + Math.min(2.4, d.aisle - 0.5) },
+    // Gates from the aisle into the front pens, through the middle wall, and into the spare pen.
+    gates: [
+      { x: -hw / 2, z: front, outer: AISLE, inner: 0 },
+      { x: hw / 2, z: front, outer: AISLE, inner: 1 },
+      { x: -hw / 2, z: mid, outer: 0, inner: 2 },
+      { x: hw / 2, z: mid, outer: 1, inner: 3 },
+      { x: hw / 2, z: backQ, outer: 3, inner: 4 },
+    ],
     pc: { x: hw - 1, z: hl - 1 },
   };
+}
+
+/** Which pen a point is in, or AISLE. */
+export function regionAt(L: Layout, x: number, z: number): number {
+  if (z > L.aisle.z0) return AISLE;
+  for (const p of L.pens) if (inRect(p, x, z)) return p.id;
+  return AISLE;
+}
+
+/**
+ * Where to walk next to get from (x, z) to (tx, tz) without climbing over pen walls:
+ * straight there if it is in the same area, otherwise to the next gate on the way.
+ */
+export function nextWaypoint(L: Layout, x: number, z: number, tx: number, tz: number): Point {
+  const from = regionAt(L, x, z), to = regionAt(L, tx, tz);
+  if (from === to) return { x: tx, z: tz };
+  const parent = (r: number) => L.gates.find((g) => g.inner === r)?.outer ?? AISLE;
+  const chain = (r: number) => { const c = [r]; while (r !== AISLE && c.length < 10) { r = parent(r); c.push(r); } return c; };
+  const up = chain(to);
+  let gate: Gate | undefined;
+  if (up.includes(from)) {
+    const child = up[up.indexOf(from) - 1]; // one step down towards the target
+    gate = L.gates.find((g) => g.inner === child);
+  } else {
+    gate = L.gates.find((g) => g.inner === from); // one step up towards the aisle
+  }
+  if (!gate) return { x: tx, z: tz };
+  const side = gate.outer === from ? 1 : -1;
+  const near = { x: gate.x, z: gate.z + side * 0.5 }, far = { x: gate.x, z: gate.z - side * 0.5 };
+  return Math.hypot(near.x - x, near.z - z) < 0.15 ? far : near;
 }

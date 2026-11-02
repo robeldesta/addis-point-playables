@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { DEFAULT_DIMS, apportion, area, buildLayout, inRect, mountY } from "./layout";
 import { CoverMap, autoPlace, footprint, shopping } from "./gear";
 import { DEAD, DEAD_ALERT_MIN, Flock, GONE, HEALTHY, SICK } from "./flock";
+import { Staff } from "./staff";
 
 const L = buildLayout(DEFAULT_DIMS);
 
@@ -89,4 +90,32 @@ describe("flock", () => {
     expect(f.stats.laid).toBeGreaterThan(4000);
     expect(f.stats.floorLaid).toBeLessThan(f.stats.laid * 0.1);
   });
+});
+
+describe("staff", () => {
+  test("attendants walk the feeders and the vet sees to flagged hens", () => {
+    const L = buildLayout(DEFAULT_DIMS);
+    const f = new Flock(L);
+    f.cover = new CoverMap(L, autoPlace(L, "2.8"));
+    const s = new Staff(L, f);
+    const feederVisits = new Set<number>();
+    const poses = new Set<string>();
+    let vetTreated = 0;
+    for (let m = 0; m < 12 * 60 * 4; m++) {
+      f.step(0.25);
+      s.step(0.25);
+      for (const w of s.workers) {
+        poses.add(w.pose);
+        if (w.pose === "pour") L.feeders.forEach((q, k) => { if (Math.hypot(q.x - w.x, q.z - w.z) < 0.6) feederVisits.add(k); });
+        if (w.role === "vet" && w.doing === "Treated a hen") vetTreated++;
+        if (w.pose === "away") continue;
+        // Nobody walks through walls of the house.
+        expect(Math.abs(w.x)).toBeLessThanOrEqual(L.hw);
+        expect(Math.abs(w.z)).toBeLessThanOrEqual(L.hl);
+      }
+    }
+    expect(feederVisits.size).toBeGreaterThan(L.feeders.length * 0.95);
+    expect(poses.has("walk") && poses.has("pour") && poses.has("kneel")).toBe(true);
+    expect(vetTreated).toBeGreaterThan(0);
+  }, 60000);
 });
