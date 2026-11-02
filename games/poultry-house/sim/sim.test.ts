@@ -131,3 +131,40 @@ describe("staff", () => {
     expect(vetTreated).toBeGreaterThan(0);
   }, 60000);
 });
+
+describe("incidents", () => {
+  test("day 1: a feed thief before dawn and eggs slipped out the back door are both reported", () => {
+    const L = buildLayout(DEFAULT_DIMS);
+    const f = new Flock(L);
+    f.cover = new CoverMap(L, autoPlace(L, "2.8"));
+    f.setWeeks(24);
+    f.time = 5 * 60 + 20;
+    const s = new Staff(L, f);
+    s.eggCamera = true;
+    const bags = f.stats.feedBags;
+    for (let k = 0; k < 9 * 60 * 4; k++) { f.step(0.25); s.step(0.25); } // to 14:20
+    const kinds = f.alerts.map((a) => a.kind);
+    expect(kinds).toContain("intruder");
+    expect(kinds).toContain("feedtheft");
+    expect(f.alerts.filter((a) => a.kind === "eggtheft").length).toBe(2); // back door camera + short count at the table
+    expect(f.stats.feedBags).toBeLessThan(bags);
+    expect(s.workers[3].inside).toBe(false); // the thief left
+  }, 60000);
+
+  test("a player-controlled worker follows orders and does the work", () => {
+    const L = buildLayout(DEFAULT_DIMS);
+    const f = new Flock(L);
+    f.cover = new CoverMap(L, autoPlace(L, "2.8"));
+    f.time = 8 * 60;
+    const s = new Staff(L, f);
+    const w = s.workers[0];
+    s.takeOver(w);
+    const sick = f.nearestBird(0, 0, 100, (st) => st === SICK);
+    s.goHen(w, sick);
+    for (let k = 0; k < 60 * 60 && w.plan.length; k++) { f.step(1 / 60); s.step(1 / 60); }
+    expect(f.treated[sick]).toBe(1);
+    expect(w.manual).toBe(true);
+    for (let k = 0; k < 600; k++) { f.step(1 / 60); s.step(1 / 60); }
+    expect(w.plan.length).toBe(0); // waits for the next order instead of wandering off
+  }, 60000);
+});
