@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Darts Duel</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #1a120d; touch-action: none;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; font-family: Arial, Helvetica, sans-serif; color: #fff; }
+      #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      .hide { display: none !important; }
+
+      #hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 10px; right: 10px; display: flex; gap: 8px;
+        justify-content: center; pointer-events: none; z-index: 2; }
+      .card { flex: 1; max-width: 220px; background: rgba(20, 14, 10, 0.82); border-radius: 14px; padding: 6px 12px 8px;
+        border: 2px solid transparent; box-shadow: 0 3px 0 rgba(0,0,0,.3); transition: border-color .2s, opacity .2s; opacity: .7; }
+      .card.on { border-color: #f5c542; opacity: 1; }
+      .card .who { font-size: 13px; font-weight: 700; color: #e9d8bd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .card .big { font-size: 34px; font-weight: 900; line-height: 1.05; }
+      .card .sub { font-size: 12px; color: #c9b79c; }
+
+      #turn { position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+        display: flex; gap: 6px; pointer-events: none; z-index: 2; }
+      .slot { min-width: 58px; height: 38px; border-radius: 10px; background: rgba(20,14,10,.8); display: grid; place-items: center;
+        font-weight: 900; font-size: 18px; color: #6f6257; border: 2px solid rgba(255,255,255,.08); }
+      .slot.hit { color: #fff; }
+      .slot.t { color: #ff8a65; } .slot.d { color: #81c784; } .slot.b { color: #f5c542; }
+      .slot.next { border-color: rgba(245,197,66,.8); }
+      .slot.tot { background: #f5c542; color: #2a1d10; min-width: 64px; }
+
+      #hint { position: fixed; left: 50%; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 50px); transform: translateX(-50%);
+        background: rgba(255,255,255,.92); color: #2a1d10; font-weight: 800; font-size: 16px; padding: 8px 14px; border-radius: 12px;
+        white-space: nowrap; pointer-events: none; z-index: 2; transition: opacity .25s; }
+      #hint.off { opacity: 0; }
+
+      @media (min-aspect-ratio: 5/4) {
+        #hud { justify-content: space-between; }
+        .card { max-width: min(200px, 26vw); }
+        #hint { left: 12px; transform: none; bottom: max(14px, env(safe-area-inset-bottom)); font-size: 14px; white-space: normal; max-width: 24vw; }
+        #turn { left: auto; right: 12px; transform: none; flex-wrap: wrap; justify-content: flex-end; width: min(140px, 24vw); }
+        .slot { min-width: 0; flex: 1 1 40%; }
+      }
+      #pop { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(.6); font-weight: 900; font-size: 46px;
+        color: #fff; text-shadow: 0 4px 0 rgba(0,0,0,.45), 0 0 24px rgba(0,0,0,.4); opacity: 0; pointer-events: none; z-index: 3;
+        text-align: center; white-space: nowrap; }
+      #pop.show { animation: pop 1.1s ease-out forwards; }
+      #pop small { display: block; font-size: 20px; color: #f5c542; }
+      @keyframes pop { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.6); } 15% { opacity: 1; transform: translate(-50%,-50%) scale(1.1); }
+        25% { transform: translate(-50%,-50%) scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-70%) scale(1); } }
+
+      #mark { position: fixed; transform: translate(-50%, -120%); font-weight: 900; font-size: 20px; pointer-events: none; z-index: 3;
+        text-shadow: 0 2px 0 rgba(0,0,0,.6); opacity: 0; transition: opacity .2s; }
+      #mark.show { opacity: 1; }
+
+      .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 6;
+        background: rgba(12, 8, 5, 0.55); padding: 16px; box-sizing: border-box; }
+      .box { width: min(400px, 100%); max-height: 100%; overflow-y: auto; background: rgba(28, 19, 13, 0.96); border-radius: 20px;
+        padding: 18px 16px 14px; box-shadow: 0 8px 0 rgba(0,0,0,.35); box-sizing: border-box; text-align: center; }
+      h1 { margin: 0 0 2px; font-size: 40px; font-weight: 900; color: #f5c542; letter-spacing: 1px; text-shadow: 0 3px 0 #7a2b1c; }
+      h2 { margin: 0 0 6px; font-size: 30px; font-weight: 900; color: #f5c542; }
+      .tag { color: #d8c6aa; font-size: 14px; margin-bottom: 14px; }
+      .lbl { text-align: left; font-size: 13px; font-weight: 800; color: #bba68a; margin: 12px 4px 6px; text-transform: uppercase; letter-spacing: 1px; }
+      button { font: 900 18px Arial, Helvetica, sans-serif; border: 0; border-radius: 14px; color: #fff; cursor: pointer; touch-action: manipulation; }
+      .main { width: 100%; height: 54px; background: #d23a2c; box-shadow: inset 0 -4px 0 rgba(0,0,0,.28); margin-top: 6px; }
+      .alt { width: 100%; height: 48px; background: #4b3a2c; box-shadow: inset 0 -4px 0 rgba(0,0,0,.28); margin-top: 8px; }
+      .opp { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; margin-top: 6px; background: #3a2b20;
+        box-shadow: inset 0 -3px 0 rgba(0,0,0,.28); text-align: left; min-height: 54px; }
+      .opp .av { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 17px; }
+      .opp .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .opp .nm b { font-size: 17px; } .opp .nm span { font-size: 12px; color: #c9b79c; font-weight: 700; }
+      .opp .st { font-size: 22px; }
+      .opp.locked { opacity: .45; }
+      .opp.next { background: #1e8c4e; }
+      .res { font-size: 17px; color: #e9d8bd; line-height: 1.5; margin: 6px 0 10px; }
+      .res b { color: #fff; }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+
+    <div id="hud" class="hide">
+      <div class="card" id="c0"><div class="who" id="n0">You</div><div class="big" id="s0">301</div><div class="sub" id="x0"></div></div>
+      <div class="card" id="c1"><div class="who" id="n1">CPU</div><div class="big" id="s1">301</div><div class="sub" id="x1"></div></div>
+    </div>
+    <div id="turn" class="hide"><div class="slot" id="d0">–</div><div class="slot" id="d1">–</div><div class="slot" id="d2">–</div><div class="slot tot" id="dt">0</div></div>
+    <div id="hint" class="off">Drag to aim · Let go to throw</div>
+    <div id="pop"></div>
+    <div id="mark"></div>
+
+    <div class="screen" id="menu">
+      <div class="box">
+        <h1>DARTS DUEL</h1>
+        <div class="tag">Beat six rivals at 301. Hit exactly zero to win.</div>
+        <div class="lbl">Rivals</div>
+        <div id="ladder"></div>
+        <div class="lbl">Solo</div>
+        <button class="alt" id="attackBtn">Score Attack · Best <span id="best">0</span></button>
+      </div>
+    </div>
+
+    <div class="screen hide" id="over">
+      <div class="box">
+        <h2 id="oTitle">You win!</h2>
+        <div class="res" id="oText"></div>
+        <button class="main" id="oAgain">Play again</button>
+        <button class="alt" id="oMenu">Menu</button>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
