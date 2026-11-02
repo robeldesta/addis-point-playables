@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Poultry House</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="game"></div>
+    <header id="top">
+      <div class="clock"><b id="clock">Day 1 06:00</b><small id="age">Week 10 · pullets</small></div>
+      <div class="tabs" role="tablist">
+        <button data-mode="plan" class="on">Plan gear</button>
+        <button data-mode="play">Play roles</button>
+      </div>
+      <div class="speed">
+        <button data-speed="0" title="Pause">❚❚</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="5">5×</button>
+        <button data-speed="20">20×</button>
+      </div>
+    </header>
+    <aside id="panel"></aside>
+    <div id="carry"></div>
+    <div id="toast"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
