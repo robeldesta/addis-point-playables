@@ -22,7 +22,7 @@ export function rng(seed: number): () => number {
 }
 
 export interface Cover { covered(x: number, z: number): boolean }
-export type AlertKind = "sick" | "dead" | "wet" | "ammonia" | "feed";
+export type AlertKind = "sick" | "dead" | "wet" | "ammonia" | "feed" | "intruder" | "feedtheft" | "eggtheft";
 export interface Alert { id: number; kind: AlertKind; bird: number; x: number; z: number; t: number; done: boolean; text: string }
 export interface FloorEgg { x: number; z: number; t: number }
 
@@ -273,6 +273,8 @@ export class Flock {
     this.log.unshift({ t: this.time, text });
     if (this.log.length > 60) this.log.length = 60;
   }
+  /** Something the AI computer noticed outside the flock itself (people, theft). */
+  report(kind: AlertKind, x: number, z: number, text: string): void { this.alert(kind, -1, x, z, text); }
   private alert(kind: AlertKind, bird: number, x: number, z: number, text: string): void {
     this.alerts.unshift({ id: this.nextId++, kind, bird, x, z, t: this.time, done: false, text });
     if (this.alerts.length > 200) this.alerts.length = 200;

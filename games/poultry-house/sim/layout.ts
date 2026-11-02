@@ -221,5 +221,7 @@ export function nextWaypoint(L: Layout, x: number, z: number, tx: number, tz: nu
   if (!gate) return { x: tx, z: tz };
   const side = gate.outer === from ? 1 : -1;
   const near = { x: gate.x, z: gate.z + side * 0.5 }, far = { x: gate.x, z: gate.z - side * 0.5 };
-  return Math.hypot(near.x - x, near.z - z) < 0.15 ? far : near;
+  // Once lined up in front of the gate, walk on through it to the other side.
+  const lined = Math.abs(x - gate.x) < 0.3 && (z - gate.z) * side < 0.6;
+  return lined ? far : near;
 }
