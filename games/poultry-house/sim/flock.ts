@@ -64,6 +64,7 @@ export class Flock {
   log: { t: number; text: string }[] = [];
   stats = { died: 0, removed: 0, treated: 0, recovered: 0, laid: 0, floorLaid: 0, floorLost: 0, delivered: 0, aiEggs: 0, cracked: 0, feedBags: 120 };
   today = { laid: 0, delivered: 0, died: 0 };
+  yesterday: { laid: number; delivered: number; died: number } | null = null;
 
   cover: Cover | null = null;
   sensors: Point[] = [];
@@ -331,6 +332,7 @@ export class Flock {
     const r = this.rand;
     if (this.crossed(prev, 0)) {
       this.addLog(`Day ${this.day() - 1} closed: ${this.today.laid} eggs laid, ${this.today.delivered} counted at the table, ${this.today.died} died`);
+      this.yesterday = this.today;
       this.today = { laid: 0, delivered: 0, died: 0 };
       if (this.laying) this.planLaying();
     }

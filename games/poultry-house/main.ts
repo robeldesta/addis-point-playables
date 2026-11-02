@@ -707,7 +707,7 @@ function renderInfo(force = false) {
       break;
     }
     case "nest": title = "Nest box"; fact("Eggs in it", String(flock.nestEggs[s.k])); fact("In", L.pens[L.nests[s.k].pen].name); break;
-    case "table": title = "Egg table"; fact("Counted today", flock.today.delivered.toLocaleString()); fact("Laid today", flock.today.laid.toLocaleString()); fact("Counted by", staff.eggCamera ? "egg table camera" : "hand"); break;
+    case "table": title = "Egg table"; fact("Counted today", flock.today.delivered.toLocaleString()); if (flock.yesterday) fact("Yesterday", flock.yesterday.delivered.toLocaleString()); fact("Laid today", flock.today.laid.toLocaleString()); fact("Counted by", staff.eggCamera ? "egg table camera" : "hand"); break;
     case "store": title = "Feed store"; fact("Bags", String(Math.max(0, flock.stats.feedBags))); fact("Watched by", flock.feedCam ? "main door camera" : "no camera"); break;
     case "maindoor": title = "Main door"; fact("Camera", flock.doorCam ? "yes, logs everyone in and out" : "none"); break;
     case "backdoor": title = "Back door"; fact("Camera", staff.backDoorCamera ? "yes" : "none"); break;
@@ -860,7 +860,8 @@ function renderLog() {
   logEl.innerHTML = `
     <h3>Right now</h3>
     <div class="stats">${stat("Hens alive", alive.toLocaleString())}${stat("Flagged sick", String(sick))}${stat("Died today", String(flock.today.died))}
-      ${stat("Eggs counted", flock.today.delivered.toLocaleString())}${stat("Feed bags", String(Math.max(0, flock.stats.feedBags)))}${stat("Ammonia", `${Math.round(maxAmmonia())} ppm`)}</div>
+      ${stat("Eggs counted today", flock.today.delivered.toLocaleString())}${stat("Feed bags", String(Math.max(0, flock.stats.feedBags)))}${stat("Ammonia", `${Math.round(maxAmmonia())} ppm`)}</div>
+    ${flock.yesterday ? `<div class="stats" style="margin-top:6px">${stat("Yesterday laid", flock.yesterday.laid.toLocaleString())}${stat("Yesterday counted", flock.yesterday.delivered.toLocaleString())}${stat("Yesterday died", String(flock.yesterday.died))}</div>` : ""}
     <h3>Incidents</h3>
     <ul class="inc">${logShown.map((a, k) => `<li data-inc="${k}" class="${a.done ? "done" : people.includes(a.kind) ? "hot" : ""}"><span class="ico">${ICON[a.kind] ?? "•"}</span>
       <span><b>${TITLE[a.kind] ?? a.kind}</b><br><small>${esc(a.text)}</small></span><span class="t">${hhmm(a.t)}${a.done ? " ✓" : ""}</span></li>`).join("") || "<li>Nothing yet</li>"}</ul>

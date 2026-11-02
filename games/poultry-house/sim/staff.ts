@@ -14,6 +14,7 @@ export interface Step {
   dur?: number; // minutes to spend once there
   pose?: Pose; // pose while spending that time
   carry?: Carry;
+  brisk?: boolean; // quick steps between feeders on a round
   act?: () => void;
 }
 
@@ -37,6 +38,7 @@ export interface Worker {
   eggDay: number;
 }
 
+export const EGG_CART = 360; // 12 trays of 30
 export const WALK = 2.2; // metres per simulated minute (a steady walk at 1x)
 
 export class Staff {
@@ -115,7 +117,7 @@ export class Staff {
     w.plan = [{ x: fs.x + 1, z: fs.z, carry: "", dur: 1, pose: "bend" }];
     for (const k of feeders) {
       const q = L.feeders[k];
-      w.plan.push({ x: q.x + 0.45 * (w.side || 1), z: q.z, carry: "bucket", dur: 0.25, pose: "pour" });
+      w.plan.push({ x: q.x + 0.45 * (w.side || 1), z: q.z, carry: "bucket", dur: 0.12, pose: "pour", brisk: true });
     }
     w.plan.push({ x: fs.x + 1, z: fs.z, carry: "", dur: 0.5, pose: "bend", act: () => (w.doing = "") });
   }
@@ -135,6 +137,8 @@ export class Staff {
       const q = L.nests[k];
       return { x: q.x + (q.x < 0 ? 0.8 : -0.8), z: q.z, carry: "tray" as Carry, dur: 0.15, pose: "bend" as Pose, act: () => {
         w.eggs += f.collectNear(q.x, q.z, 0.6);
+        // A full cart (12 trays) goes to the table to be counted before carrying on.
+        if (w.eggs >= EGG_CART && thenTable) w.plan.unshift(this.tableStep(w, true));
       } };
     });
     if (thenTable) this.pushTable(w);
@@ -148,14 +152,18 @@ export class Staff {
   }
 
   private pushTable(w: Worker): void {
+    w.plan.push(this.tableStep(w, false));
+  }
+  private tableStep(w: Worker, more: boolean): Step {
     const f = this.flock;
     const et = center(this.L.eggTable);
-    w.plan.push({ x: et.x, z: et.z - 0.9, carry: "tray", dur: 1, pose: "bend", act: () => {
+    return { x: et.x, z: et.z - 0.9, carry: "tray", dur: 1, pose: "bend", act: () => {
       const n = w.eggs;
       const r = f.deliver(n, this.eggCamera);
       f.addLog(`${w.name}: ${n} eggs on the table` + (r.counted ? ` · camera counted ${r.counted}` : ""));
-      w.eggs = 0; w.carry = ""; w.doing = "";
-    } });
+      w.eggs = 0;
+      if (!more) { w.carry = ""; w.doing = ""; }
+    } };
   }
 
   goRake(w: Worker, x: number, z: number): void {
@@ -245,7 +253,7 @@ export class Staff {
       const d = Math.hypot(dx, dz);
       const stop = direct && s.bird !== undefined ? 0.45 : 0.05;
       if (d > stop + 0.01 || !direct) {
-        const m = Math.min(Math.max(0, d - stop), WALK * dt);
+        const m = Math.min(Math.max(0, d - stop), WALK * (s.brisk ? 2.5 : 1) * dt);
         if (d > 1e-6) { w.x += (dx / d) * m; w.z += (dz / d) * m; }
         if (d > 1e-3) w.heading = Math.atan2(dx, dz);
         w.pose = "walk";
@@ -310,12 +318,13 @@ export class Staff {
       this.goFeed(w, ks);
       return;
     }
-    if (f.laying && h >= 9.5 && h < 13 && w.eggDay !== day) {
-      w.eggDay = day;
+    const eggSlot = h >= 9 && h < 13 ? day * 2 : h >= 13.5 && h < 16 ? day * 2 + 1 : -1;
+    if (f.laying && eggSlot >= 0 && w.eggDay !== eggSlot) {
+      w.eggDay = eggSlot;
       const pens = this.myPens(w);
       const ks = L.nests.map((_, k) => k).filter((k) => pens.includes(L.nests[k].pen)).sort((a, b) => L.nests[b].z - L.nests[a].z);
       // Attendant 2 sometimes slips part of the tray out the back door before the table.
-      const steal = w.id === 1 && this.eggTheftDay !== day && (day === 1 || r() < 0.4);
+      const steal = w.id === 1 && eggSlot % 2 === 0 && this.eggTheftDay !== day && (day === 1 || r() < 0.4);
       this.goNests(w, ks, !steal);
       if (steal) {
         this.eggTheftDay = day;
