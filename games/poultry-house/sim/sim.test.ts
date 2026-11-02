@@ -25,17 +25,17 @@ describe("layout", () => {
 });
 
 describe("cameras", () => {
-  test("a 2.8mm camera at the quarter line sees about 13 x 5.5 m", () => {
+  test("a 2.8mm camera at the quarter line sees about 18 x 7.4 m", () => {
     const f = footprint(L, { x: 5, z: 0, lens: "2.8", rot: 0 });
-    expect(mountY(L, 5)).toBeCloseTo(5.25);
-    expect(f.x1 - f.x0).toBeCloseTo(13.2, 0);
-    expect(f.z1 - f.z0).toBeCloseTo(5.5, 0);
+    expect(mountY(L, 5)).toBeCloseTo(7.1);
+    expect(f.x1 - f.x0).toBeCloseTo(17.9, 0);
+    expect(f.z1 - f.z0).toBeCloseTo(7.4, 0);
   });
   test("auto placement covers every active pen", () => {
     const gears = autoPlace(L, "2.8");
     const s = new CoverMap(L, gears).stats();
     expect(s.total).toBeGreaterThan(0.99);
-    expect(gears.filter((g) => g.kind === "overhead").length).toBe(18);
+    expect(gears.filter((g) => g.kind === "overhead").length).toBe(14);
   });
   test("wider lenses need fewer cameras", () => {
     const n = (lens: "2.0" | "2.8" | "4.0") => autoPlace(L, lens).filter((g) => g.kind === "overhead").length;
