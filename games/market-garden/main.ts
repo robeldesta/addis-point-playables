@@ -1923,6 +1923,8 @@ interface SaveData {
   v: 3; coins: number; lifetime: number; built: string[]; paid: Record<string, number>; lvl: Record<string, number>;
   bag: Kind[]; shelves: Record<string, Kind[]>; machines: Record<string, [Kind[], Kind[]]>; cash: Record<string, number>; tiles?: number[];
   rating?: Record<string, number>; broken?: string[]; order?: Order | null;
+  /** Goes up by one on every save, so an old tab can tell a newer save exists. */
+  seq?: number;
 }
 interface SaveV2 {
   v: 2; coins: number; lifetime: number; built: string[]; paid: Record<string, number>;
@@ -1938,8 +1940,23 @@ function persist() {
     broken: [...broken].map((m) => m.id), order,
     tiles: tiles.map((t) => Math.round(t.growth * 100) / 100),
   };
-  P.save(GAME_ID, JSON.stringify(d));
+  if (staleTab) return;
+  // If the farm is open in two tabs, an old tab must never overwrite newer progress.
+  void P.loadSave(GAME_ID).then((raw) => {
+    let cur = 0;
+    try { cur = raw ? JSON.parse(raw).seq ?? 0 : 0; } catch { /* unreadable: overwrite */ }
+    if (cur > saveSeq) {
+      staleTab = true;
+      toast("Your farm was played in another tab. Loading the latest...", 3);
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+    saveSeq = cur + 1;
+    d.seq = saveSeq;
+    P.save(GAME_ID, JSON.stringify(d));
+  });
 }
+let saveSeq = 0, staleTab = false;
 function upgradeSave(o: SaveV2): SaveData {
   return {
     v: 3, coins: o.coins, lifetime: o.lifetime, built: o.built, paid: o.paid ?? {}, lvl: {}, bag: o.bag,
@@ -1951,6 +1968,7 @@ async function load() {
   try {
     const raw = await P.loadSave(GAME_ID);
     const parsed = raw ? JSON.parse(raw) : null;
+    saveSeq = parsed?.seq ?? 0;
     if (parsed && parsed.v === 3) d = parsed;
     else if (parsed && parsed.v === 2) d = upgradeSave(parsed);
   } catch { /* fresh start */ }
@@ -1982,6 +2000,15 @@ async function load() {
     if (d.order) { newOrder(); Object.assign(order!, d.order); }
   }
   applyCaps();
+  // Support link to give back buildings lost to a stale-tab overwrite: ?restore=silo,harvester
+  const restore = new URLSearchParams(location.search).get("restore");
+  if (restore) {
+    for (const id of restore.split(",")) {
+      const p = PADS.find((pp) => pp.id === id);
+      if (p && !built.has(id)) { built.add(id); delete paidSaved[id]; p.build(false); }
+    }
+    applyCaps();
+  }
   // Restored things appear instantly, without the pop-in.
   pops.forEach((p) => p.obj.scale.copy(p.base));
   pops.length = 0;
