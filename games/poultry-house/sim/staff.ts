@@ -3,6 +3,7 @@
 // Any worker can be taken over by the player, who then gives the orders by tapping.
 import { Layout, center, nextWaypoint } from "./layout";
 import { DEAD, Flock, GONE, SICK } from "./flock";
+import { BAG_KG, CRATE, MANURE_KG, Records } from "./records";
 
 export type Pose = "walk" | "stand" | "pour" | "bend" | "kneel" | "rake" | "away";
 export type Carry = "" | "bucket" | "tray" | "bag" | "rake";
@@ -14,13 +15,15 @@ export interface Step {
   dur?: number; // minutes to spend once there
   pose?: Pose; // pose while spending that time
   carry?: Carry;
+  brisk?: boolean; // quick steps between feeders on a round
   act?: () => void;
 }
 
 export interface Worker {
   id: number;
   name: string;
-  role: "attendant" | "vet" | "stranger";
+  role: "attendant" | "vet" | "stranger" | "visitor";
+  title: string; // job as the AI computer knows it
   side: number; // attendants: -1 looks after the left pens, +1 the right
   x: number;
   z: number;
@@ -35,8 +38,12 @@ export interface Worker {
   eggs: number;
   fedSlot: number; // which feeding slot (day*2 + 0/1) was done last
   eggDay: number;
+  litterDay: number;
+  sacks: number; // litter sacks raked up and not yet weighed
+  kg: number;
 }
 
+export const EGG_CART = 360; // 12 trays of 30
 export const WALK = 2.2; // metres per simulated minute (a steady walk at 1x)
 
 export class Staff {
@@ -48,29 +55,45 @@ export class Staff {
   feedCamera = true;
   private theftDay = -1;
   private eggTheftDay = -1;
+  private supplyDay = -1;
+  private buyDay = -1;
+  private fertDay = -1;
+  private dayNo: number;
+  private grn = 0;
+  private waybill = 0;
+  readonly rec: Records;
 
   constructor(readonly L: Layout, readonly flock: Flock) {
     const d = L.mainDoor;
-    const mk = (id: number, name: string, role: Worker["role"], side: number): Worker => ({
-      id, name, role, side, x: d.x, z: d.z + 1, heading: Math.PI, pose: "away", carry: "", doing: "", plan: [], wait: 0,
-      inside: false, manual: false, eggs: 0, fedSlot: -1, eggDay: -1,
+    const mk = (id: number, name: string, role: Worker["role"], side: number, title: string): Worker => ({
+      id, name, role, side, title, x: d.x, z: d.z + 1, heading: Math.PI, pose: "away", carry: "", doing: "", plan: [], wait: 0,
+      inside: false, manual: false, eggs: 0, fedSlot: -1, eggDay: -1, litterDay: -1, sacks: 0, kg: 0,
     });
     this.workers = [
-      mk(0, "Attendant 1", "attendant", -1),
-      mk(1, "Attendant 2", "attendant", 1),
-      mk(2, "Vet", "vet", 0),
-      mk(3, "Unknown person", "stranger", 0),
+      mk(0, "Abebe Kebede", "attendant", -1, "Attendant · Pens 1 and 3"),
+      mk(1, "Tigist Alemu", "attendant", 1, "Attendant · Pens 2 and 4"),
+      mk(2, "Dr. Selam Haile", "vet", 0, "Vet"),
+      mk(3, "Unknown person", "stranger", 0, "Not on the staff list"),
+      mk(4, "Dawit Tesfaye", "visitor", 0, "Feed supplier"),
+      mk(5, "Hana Girma", "visitor", 0, "Egg buyer"),
+      mk(6, "Yonas Bekele", "visitor", 0, "Fertilizer plant"),
     ];
+    this.rec = new Records(flock.stats.feedBags);
+    this.dayNo = flock.day();
   }
 
   private hours(w: Worker): [number, number] {
     if (w.role === "vet") return [7.5, 17.5];
-    if (w.role === "stranger") return [-1, -1];
+    if (w.role === "stranger" || w.role === "visitor") return [-1, -1];
     return [5.75, 18.5];
   }
 
   step(dt: number): void {
+    const f = this.flock;
+    if (f.day() !== this.dayNo) { this.dayNo = f.day(); this.rec.newDay(); }
+    this.rec.litterInHouse += ((f.n - f.stats.died) * MANURE_KG * dt) / 1440;
     this.night();
+    this.visitors();
     for (const w of this.workers) this.tick(w, dt);
   }
 
@@ -88,8 +111,15 @@ export class Staff {
     this.handled.add(i);
     const dead = f.st[i] === DEAD;
     w.doing = dead ? "Removing a dead hen" : "Checking a hen";
-    w.plan = [{ bird: i, carry: "", dur: dead ? 1.5 : 4, pose: "kneel", act: () => {
+    const dur = dead ? 1.5 : 4;
+    w.plan = [{ bird: i, carry: "", dur, pose: "kneel", act: () => {
       this.handled.delete(i);
+      const k = this.rec.of(w.id);
+      k.checked++;
+      const a = f.alerts.find((q) => q.bird === i && !q.done);
+      if (a && w.role === "vet") k.response.push(Math.max(0, f.time - dur - a.t));
+      if (f.st[i] === SICK) k.treated++;
+      else if (f.st[i] === DEAD) k.removed++;
       if (f.st[i] === SICK) { f.treat(i); w.doing = "Treated a hen"; }
       else if (f.st[i] === DEAD) {
         f.remove(i);
@@ -101,7 +131,7 @@ export class Staff {
           f.addLog(`${w.name} took a dead hen out`);
         } });
       } else {
-        f.flag[i] &= ~1;
+        f.cleared(i);
         w.doing = "Hen was fine";
       }
     } }];
@@ -112,10 +142,18 @@ export class Staff {
     const L = this.L;
     const fs = center(L.feedStore);
     w.doing = "Filling feeders";
-    w.plan = [{ x: fs.x + 1, z: fs.z, carry: "", dur: 1, pose: "bend" }];
+    const f = this.flock, rec = this.rec;
+    // About 110 g a hen a day in two rounds, shared by the two attendants: so many bags leave the store now.
+    const share = this.L.feeders.length ? feeders.length / this.L.feeders.length : 0;
+    const bags = Math.max(1, Math.ceil(((f.n - f.stats.died) * 0.11 * share) / 2 / BAG_KG));
+    w.plan = [{ x: fs.x + 1, z: fs.z, carry: "", dur: 1, pose: "bend", act: () => {
+      f.stats.feedBags -= bags;
+      rec.feedRow(f.time, "Issued", -bags, w.name, `Feeding round · ${feeders.length} feeders`, this.feedCamera);
+      rec.of(w.id).bags += bags;
+    } }];
     for (const k of feeders) {
       const q = L.feeders[k];
-      w.plan.push({ x: q.x + 0.45 * (w.side || 1), z: q.z, carry: "bucket", dur: 0.25, pose: "pour" });
+      w.plan.push({ x: q.x + 0.45 * (w.side || 1), z: q.z, carry: "bucket", dur: 0.12, pose: "pour", brisk: true, act: () => { rec.of(w.id).feeders++; } });
     }
     w.plan.push({ x: fs.x + 1, z: fs.z, carry: "", dur: 0.5, pose: "bend", act: () => (w.doing = "") });
   }
@@ -124,7 +162,7 @@ export class Staff {
   goFeeder(w: Worker, k: number): void {
     const q = this.L.feeders[k];
     w.doing = "Filling a feeder";
-    w.plan = [{ x: q.x + 0.45, z: q.z, carry: "bucket", dur: 0.4, pose: "pour", act: () => { w.doing = ""; } }];
+    w.plan = [{ x: q.x + 0.45, z: q.z, carry: "bucket", dur: 0.4, pose: "pour", act: () => { w.doing = ""; this.rec.of(w.id).feeders++; } }];
   }
 
   /** Collect from these nest boxes into a tray. */
@@ -134,7 +172,11 @@ export class Staff {
     w.plan = nests.map((k) => {
       const q = L.nests[k];
       return { x: q.x + (q.x < 0 ? 0.8 : -0.8), z: q.z, carry: "tray" as Carry, dur: 0.15, pose: "bend" as Pose, act: () => {
-        w.eggs += f.collectNear(q.x, q.z, 0.6);
+        const got = f.collectNear(q.x, q.z, 0.6);
+        w.eggs += got;
+        this.rec.of(w.id).eggs += got;
+        // A full cart (12 trays) goes to the table to be counted before carrying on.
+        if (w.eggs >= EGG_CART && thenTable) w.plan.unshift(this.tableStep(w, true));
       } };
     });
     if (thenTable) this.pushTable(w);
@@ -148,19 +190,49 @@ export class Staff {
   }
 
   private pushTable(w: Worker): void {
+    w.plan.push(this.tableStep(w, false));
+  }
+  private tableStep(w: Worker, more: boolean): Step {
     const f = this.flock;
     const et = center(this.L.eggTable);
-    w.plan.push({ x: et.x, z: et.z - 0.9, carry: "tray", dur: 1, pose: "bend", act: () => {
+    return { x: et.x, z: et.z - 0.9, carry: "tray", dur: 1, pose: "bend", act: () => {
       const n = w.eggs;
       const r = f.deliver(n, this.eggCamera);
       f.addLog(`${w.name}: ${n} eggs on the table` + (r.counted ? ` · camera counted ${r.counted}` : ""));
-      w.eggs = 0; w.carry = ""; w.doing = "";
-    } });
+      if (n > 0) {
+        this.rec.eggRow(f.time, "Counted at table", n, w.name, `${(n / 30).toFixed(1)} trays` + (r.cracked ? ` · ${r.cracked} cracked` : ""), this.eggCamera);
+        this.rec.of(w.id).trips++;
+      }
+      w.eggs = 0;
+      if (!more) { w.carry = ""; w.doing = ""; }
+    } };
   }
 
   goRake(w: Worker, x: number, z: number): void {
     w.doing = "Raking wet bedding";
-    w.plan = [{ x, z, carry: "rake", dur: 4, pose: "rake", act: () => { this.flock.rake(x, z); w.carry = ""; w.doing = ""; } }];
+    w.plan = [{ x, z, carry: "rake", dur: 4, pose: "rake", act: () => { this.flock.rake(x, z); this.rec.of(w.id).raked++; w.carry = ""; w.doing = ""; } }];
+  }
+
+  /** Clean out caked litter under the drinkers into sacks and weigh them at the scale. */
+  goLitter(w: Worker, spots: { x: number; z: number }[]): void {
+    const f = this.flock, sc = this.L.litterScale;
+    w.doing = "Cleaning out litter";
+    w.plan = spots.map((q) => ({ x: q.x + 0.6, z: q.z, carry: "rake" as Carry, dur: 3, pose: "rake" as Pose, act: () => {
+      f.rake(q.x, q.z);
+      w.sacks++;
+      w.kg += Math.round(32 + f.rand() * 12);
+    } }));
+    w.plan.push({ x: sc.x, z: sc.z - 0.7, carry: "bag", dur: 1.2, pose: "bend", act: () => this.weighLitter(w) });
+  }
+
+  private weighLitter(w: Worker): void {
+    if (w.sacks > 0) {
+      const k = this.rec.of(w.id);
+      k.sacks += w.sacks; k.kg += w.kg;
+      this.rec.litterRow(this.flock.time, "Weighed out", w.kg, w.sacks, w.name, w.side < 0 ? "Pens 1 and 3 · under drinkers" : "Pens 2 and 4 · under drinkers", this.doorCamera);
+      this.flock.addLog(`${w.name}: ${w.sacks} litter sacks weighed, ${w.kg} kg`);
+    }
+    w.sacks = 0; w.kg = 0; w.carry = ""; w.doing = "";
   }
 
   takeOver(w: Worker | null): void {
@@ -189,12 +261,14 @@ export class Staff {
       s.x = L.mainDoor.x; s.z = L.mainDoor.z - 0.5; s.pose = "stand"; s.carry = "";
       const fs = center(L.feedStore);
       const mx = L.mainDoor.x, mz = L.mainDoor.z;
+      f.addLog(`${s.name} came in`);
       if (this.doorCamera) f.report("intruder", mx, mz - 1, "Person came in by the main door outside working hours");
       s.doing = "";
       let taken = 0;
       const grab = (): Step => ({ x: fs.x + 1.2, z: fs.z, carry: "", dur: 1.5, pose: "bend", act: () => {
         taken++;
         f.stats.feedBags--;
+        this.rec.feedRow(f.time, "Taken, not booked", -1, s.name, "Outside working hours · no feeding round", this.feedCamera);
         s.carry = "bag";
       } });
       const out = (): Step => ({ x: mx, z: mz - 0.3, carry: "bag", dur: 0.4, pose: "bend", act: () => { s.carry = ""; } });
@@ -203,9 +277,95 @@ export class Staff {
         grab(), out(), grab(), out(),
         { x: mx, z: mz - 0.3, dur: 0.1, act: () => {
           s.inside = false; s.pose = "away"; s.doing = "";
+          f.addLog(`${s.name} left`);
           if (this.feedCamera) f.report("feedtheft", fs.x, fs.z, `${taken} feed bags carried out with no feeding round on`);
         } },
       ];
+    }
+  }
+
+  // ---------------------------------------------------------------- visitors
+  // People from outside who come in by the main door and whose every load is booked.
+  private enter(v: Worker): void {
+    const d = this.L.mainDoor;
+    v.inside = true;
+    v.x = d.x; v.z = d.z - 0.5; v.pose = "stand"; v.carry = ""; v.wait = 0;
+    this.flock.addLog(`${v.name} (${v.title}) came in`);
+  }
+  private leave(v: Worker): Step {
+    const d = this.L.mainDoor;
+    return { x: d.x, z: d.z - 0.3, dur: 0.1, act: () => { v.inside = false; v.pose = "away"; v.doing = ""; v.carry = ""; this.flock.addLog(`${v.name} left`); } };
+  }
+
+  private visitors(): void {
+    const f = this.flock, L = this.L, rec = this.rec;
+    const h = f.minuteOfDay() / 60, day = f.day();
+    const d = L.mainDoor;
+    const atDoor = (v: Worker, carry: Carry): Step => ({ x: d.x + 0.3, z: d.z - 0.4, carry, dur: 0.4, pose: "bend" });
+
+    // Feed supplier: unloads 40 bags in five trips, each one booked against the receipt.
+    const sup = this.workers[4];
+    if (!sup.inside && this.supplyDay !== day && h >= 11 && h < 12 && (day === 1 || rec.book < 50)) {
+      this.supplyDay = day;
+      this.enter(sup);
+      const grn = `GRN-${String(++this.grn).padStart(4, "0")}`;
+      const fs = center(L.feedStore);
+      sup.doing = `Delivering feed · ${grn}`;
+      sup.plan = [];
+      for (let k = 1; k <= 5; k++) {
+        sup.plan.push(atDoor(sup, ""));
+        sup.plan.push({ x: fs.x + 1.2, z: fs.z + 0.3, carry: "bag", dur: 0.6, pose: "bend", act: () => {
+          f.stats.feedBags += 8;
+          rec.feedRow(f.time, "Delivery", 8, sup.name, `${grn} · load ${k} of 5`, this.feedCamera);
+          sup.carry = "";
+        } });
+      }
+      sup.plan.push(this.leave(sup));
+    }
+
+    // Egg buyer: takes every full crate on the table, four crates a trip.
+    const buy = this.workers[5];
+    if (!buy.inside && this.buyDay !== day && h >= 16.5 && h < 17.5 && rec.store >= CRATE) {
+      this.buyDay = day;
+      this.enter(buy);
+      const wb = `WB-${String(++this.waybill).padStart(4, "0")}`;
+      const et = center(L.eggTable);
+      const trips = Math.min(4, Math.ceil(Math.floor(rec.store / CRATE) / 4));
+      buy.doing = `Picking up eggs · ${wb}`;
+      buy.plan = [];
+      for (let k = 1; k <= trips; k++) {
+        buy.plan.push({ x: et.x, z: et.z + 0.9, carry: "", dur: 1, pose: "bend", act: () => {
+          const crates = Math.min(4, Math.floor(rec.store / CRATE));
+          if (crates > 0) rec.eggRow(f.time, "Picked up", -crates * CRATE, buy.name, `${wb} · ${crates} crates`, this.eggCamera);
+          buy.carry = "tray";
+        } });
+        buy.plan.push(atDoor(buy, "tray"));
+      }
+      buy.plan.push(this.leave(buy));
+    }
+
+    // Fertilizer plant: collects the weighed litter sacks as one production batch.
+    const fer = this.workers[6];
+    if (!fer.inside && this.fertDay !== day && h >= 17.5 && h < 18.5 && rec.litterSacks > 0) {
+      this.fertDay = day;
+      this.enter(fer);
+      const batch = `FB-${String(++rec.batches).padStart(4, "0")}`;
+      const sc = L.litterScale;
+      const trips = Math.min(4, Math.ceil(rec.litterSacks / 4));
+      fer.doing = `Collecting litter · ${batch}`;
+      fer.plan = [];
+      for (let k = 1; k <= trips; k++) {
+        fer.plan.push({ x: sc.x + 0.6, z: sc.z + 0.3, carry: "", dur: 0.8, pose: "bend", act: () => {
+          const n = Math.min(4, rec.litterSacks);
+          if (n > 0) {
+            const kg = Math.round((rec.litterStore * n) / rec.litterSacks);
+            rec.litterRow(f.time, "Issued to fertilizer", -kg, -n, fer.name, `Batch ${batch}`, this.doorCamera);
+          }
+          fer.carry = "bag";
+        } });
+        fer.plan.push(atDoor(fer, "bag"));
+      }
+      fer.plan.push(this.leave(fer));
     }
   }
 
@@ -223,14 +383,14 @@ export class Staff {
       w.pose = "stand"; w.plan = []; w.wait = 0;
       f.addLog(`${w.name} came in`);
     }
-    if (w.role !== "stranger" && !w.manual && !onShift && !w.plan.length && w.doing !== "Going home") {
+    if (w.role !== "stranger" && w.role !== "visitor" && !w.manual && !onShift && !w.plan.length && w.doing !== "Going home") {
       w.doing = "Going home";
       w.plan = [{ x: this.L.mainDoor.x, z: this.L.mainDoor.z - 0.4, act: () => {
         w.inside = false; w.pose = "away"; w.doing = "";
         f.addLog(`${w.name} left`);
       } }];
     }
-    if (!w.plan.length && !w.manual && w.role !== "stranger") this.choose(w);
+    if (!w.plan.length && !w.manual && w.role !== "stranger" && w.role !== "visitor") this.choose(w);
     const s = w.plan[0];
     if (!s) { if (w.pose === "walk") w.pose = "stand"; return; }
 
@@ -245,8 +405,9 @@ export class Staff {
       const d = Math.hypot(dx, dz);
       const stop = direct && s.bird !== undefined ? 0.45 : 0.05;
       if (d > stop + 0.01 || !direct) {
-        const m = Math.min(Math.max(0, d - stop), WALK * dt);
+        const m = Math.min(Math.max(0, d - stop), WALK * (s.brisk ? 2.5 : 1) * dt);
         if (d > 1e-6) { w.x += (dx / d) * m; w.z += (dz / d) * m; }
+        if (w.role === "attendant" || w.role === "vet") this.rec.of(w.id).metres += m;
         if (d > 1e-3) w.heading = Math.atan2(dx, dz);
         w.pose = "walk";
         if (s.carry !== undefined) w.carry = s.carry;
@@ -310,12 +471,20 @@ export class Staff {
       this.goFeed(w, ks);
       return;
     }
-    if (f.laying && h >= 9.5 && h < 13 && w.eggDay !== day) {
-      w.eggDay = day;
+    if (h >= 12.5 && h < 17.5 && w.litterDay !== day) {
+      w.litterDay = day;
+      const ds = L.drinkers.filter((q) => this.myPens(w).includes(q.pen));
+      const spots = [0, 1, 2, 3].map(() => ds[Math.floor(r() * ds.length)]).sort((a, b) => b.z - a.z);
+      this.goLitter(w, spots);
+      return;
+    }
+    const eggSlot = h >= 9 && h < 13 ? day * 2 : h >= 13.5 && h < 16 ? day * 2 + 1 : -1;
+    if (f.laying && eggSlot >= 0 && w.eggDay !== eggSlot) {
+      w.eggDay = eggSlot;
       const pens = this.myPens(w);
       const ks = L.nests.map((_, k) => k).filter((k) => pens.includes(L.nests[k].pen)).sort((a, b) => L.nests[b].z - L.nests[a].z);
       // Attendant 2 sometimes slips part of the tray out the back door before the table.
-      const steal = w.id === 1 && this.eggTheftDay !== day && (day === 1 || r() < 0.4);
+      const steal = w.id === 1 && eggSlot % 2 === 0 && this.eggTheftDay !== day && (day === 1 || r() < 0.4);
       this.goNests(w, ks, !steal);
       if (steal) {
         this.eggTheftDay = day;
@@ -333,6 +502,7 @@ export class Staff {
         last.act = () => {
           const onTable = w.eggs;
           done();
+          if (took > 0) this.rec.eggRow(f.time, "Missing", -took, w.name, `${picked} picked from nests, ${onTable} reached the table`, this.eggCamera);
           if (this.eggCamera && took > 0) {
             const et = center(L.eggTable);
             f.report("eggtheft", et.x, et.z, `${took} eggs missing: ${picked} picked up from the nests, ${onTable} counted at the table`);
@@ -347,7 +517,7 @@ export class Staff {
       const ds = L.drinkers.filter((q) => this.myPens(w).includes(q.pen));
       const q = ds[Math.floor(r() * ds.length)];
       w.doing = "Checking drinkers";
-      w.plan = [{ x: q.x + 0.4, z: q.z, carry: "", dur: 1.5, pose: "bend", act: () => { w.doing = ""; } }];
+      w.plan = [{ x: q.x + 0.4, z: q.z, carry: "", dur: 1.5, pose: "bend", act: () => { w.doing = ""; this.rec.of(w.id).drinkers++; } }];
       return;
     }
     w.doing = "";

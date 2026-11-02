@@ -51,6 +51,7 @@ export interface Layout {
   backDoor: Point;
   eggTable: Rect;
   feedStore: Rect;
+  litterScale: Point; // floor scale where litter sacks are weighed before going out
   gates: Gate[];
   pc: Point;
 }
@@ -181,6 +182,7 @@ export function buildLayout(input: Dims): Layout {
     mainDoor: { x: -hw + Math.min(5, d.width * 0.25), z: hl },
     backDoor: { x: hw - Math.min(2.5, d.width * 0.12), z: -hl },
     eggTable: { x0: 1, x1: 3, z0: aisleMid - tableHalf, z1: aisleMid + tableHalf },
+    litterScale: { x: -hw + Math.min(8.5, d.width * 0.42), z: aisleMid + 0.6 },
     feedStore: { x0: -hw + 0.3, x1: -hw + 3.3, z0: front + 0.3, z1: front + Math.min(2.4, d.aisle - 0.5) },
     // Gates from the aisle into the front pens, through the middle wall, and into the spare pen.
     gates: [
