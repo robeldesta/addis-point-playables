@@ -93,6 +93,18 @@ describe("flock", () => {
 });
 
 describe("staff", () => {
+  test("workers get through the gates at normal frame rate (no getting stuck at a gate)", () => {
+    const L = buildLayout(DEFAULT_DIMS);
+    const f = new Flock(L);
+    const s = new Staff(L, f);
+    const reached = new Set<number>();
+    for (let k = 0; k < 60 * 60; k++) { // one sim hour in 1/60-minute frames, like the browser at 1x
+      f.step(1 / 60); s.step(1 / 60);
+      for (const w of s.workers) if (w.inside && w.z < L.aisle.z0 - 1) reached.add(w.id);
+    }
+    expect(reached.has(0) && reached.has(1)).toBe(true);
+  }, 60000);
+
   test("attendants walk the feeders and the vet sees to flagged hens", () => {
     const L = buildLayout(DEFAULT_DIMS);
     const f = new Flock(L);
