@@ -14,13 +14,13 @@ export interface Dims {
   trussSpacing: number;
 }
 
-// Width, length and peak height tape-measured on 2 Nov 2026 (20 x 55 m, 6.7 m).
-// Wall height, aisle depth and the pen split are still estimated from photos.
+// Tape-measured on 2 Nov 2026: 20 x 55 m, side walls 6.7 m high.
+// The peak (about 2 m above the walls), aisle depth and pen split are still photo estimates.
 export const DEFAULT_DIMS: Dims = {
   width: 20,
   length: 55,
-  eave: 5,
-  ridge: 6.7,
+  eave: 6.7,
+  ridge: 8.7,
   aisle: 5,
   birds: 7000,
   feeders: 200,

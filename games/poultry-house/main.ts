@@ -10,6 +10,7 @@ import {
 import { DEAD, Flock, GONE, HEALTHY, SICK } from "./sim/flock";
 
 const GAME_ID = "poultry-house";
+const SAVE_V = 2; // bump when DEFAULT_DIMS change so old saved sizes are dropped
 type Mode = "plan" | "play";
 type Tool = GearKind | "remove";
 type Role = "doctor" | "eggs" | "litter" | "manager";
@@ -466,7 +467,7 @@ function gearChanged(saveIt = true) {
 }
 
 function persist() {
-  void P.save(GAME_ID, JSON.stringify({ v: 1, dims, gears, lens }));
+  void P.save(GAME_ID, JSON.stringify({ v: SAVE_V, dims, gears, lens }));
 }
 
 // ------------------------------------------------------------------ per-frame visuals
@@ -784,7 +785,7 @@ function renderPlan() {
     <h3>Shopping list</h3>
     <table class="shop">${shop.map((l) => `<tr><td>${esc(l.item)}${l.note ? `<br><small>${esc(l.note)}</small>` : ""}</td><td class="q">${l.qty}</td></tr>`).join("")}</table>
     <h3>House size</h3>
-    <p>Width, length and peak are tape-measured. Wall height and aisle are still photo estimates. Applying re-places the gear.</p>
+    <p>Width, length and wall height are tape-measured. Peak height and aisle are still photo estimates. Applying re-places the gear.</p>
     <div class="grid3">
       ${dimInput("width", "Width m")}${dimInput("length", "Length m")}${dimInput("aisle", "Aisle m")}
       ${dimInput("eave", "Wall height m")}${dimInput("ridge", "Peak height m")}${dimInput("birds", "Birds")}
@@ -967,7 +968,8 @@ async function boot() {
   try {
     const raw = await P.loadSave(GAME_ID);
     if (raw) {
-      const s = JSON.parse(raw) as { dims?: Dims; gears?: Gear[]; lens?: Lens };
+      const s = JSON.parse(raw) as { v?: number; dims?: Dims; gears?: Gear[]; lens?: Lens };
+      if (s.v !== SAVE_V) throw new Error("old save"); // measurements changed, start from the new defaults
       if (s.dims) dims = { ...DEFAULT_DIMS, ...s.dims };
       if (s.lens && s.lens in LENS) lens = s.lens;
       L = buildLayout(dims);
