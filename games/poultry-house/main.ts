@@ -178,10 +178,12 @@ let birdBody: THREE.InstancedMesh;
 let birdHead: THREE.InstancedMesh;
 let markerMesh: THREE.InstancedMesh;
 let eggMesh: THREE.InstancedMesh;
+let trayMesh: THREE.InstancedMesh;
 let bagsGroup: THREE.Group;
 let crew: { p: Person; tag: THREE.Sprite; text: string }[] = [];
 const MAX_MARKERS = 400;
-const MAX_EGGS = 3000;
+const MAX_EGGS = 4000;
+const MAX_TRAYS = 18 * 12; // 6 x 3 stacks on the table, up to 12 trays high
 
 function buildWorld() {
   const { hw, hl } = L;
@@ -348,7 +350,11 @@ function buildWorld() {
   markerMesh.renderOrder = 5;
   overlayGroup.add(markerMesh);
   eggMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), mat(0xf3e2c3), MAX_EGGS);
-  world.add(eggMesh);
+  trayMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.3, 0.045, 0.3), mat(0xb9a98c), MAX_TRAYS);
+  trayMesh.count = 0;
+  // These move every frame; their cached bounds go stale, so never cull them (it hid eggs from the egg camera).
+  for (const m of [eggMesh, trayMesh, markerMesh, birdHead]) m.frustumCulled = false;
+  world.add(eggMesh, trayMesh);
 
   // The people.
   crew = staff.workers.map((w) => {
@@ -525,14 +531,37 @@ function updateBirds() {
     dummy.position.set(x, y, z); dummy.scale.set(0.045, 0.06, 0.045); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
     eggMesh.setMatrixAt(e++, dummy.matrix);
   };
+  // Egg table first so it always shows: today's eggs stacked in trays of 30.
+  const trays = Math.min(MAX_TRAYS, Math.ceil(flock.today.delivered / 30));
+  const et = L.eggTable;
+  const cols = 6, rows = 3, stacks = cols * rows;
+  const sx = (et.x1 - et.x0) / cols, sz = (et.z1 - et.z0) / rows;
+  const top = new Array(stacks).fill(0);
+  for (let k = 0; k < trays; k++) {
+    const st = k % stacks, lvl = Math.floor(k / stacks);
+    top[st] = lvl + 1;
+    dummy.position.set(et.x0 + (st % cols + 0.5) * sx, 0.9 + 0.025 + lvl * 0.05, et.z0 + (Math.floor(st / cols) + 0.5) * sz);
+    dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+    trayMesh.setMatrixAt(k, dummy.matrix);
+  }
+  trayMesh.count = trays;
+  trayMesh.instanceMatrix.needsUpdate = true;
+  top.forEach((n, st) => {
+    if (!n) return;
+    const cx = et.x0 + (st % cols + 0.5) * sx, cz = et.z0 + (Math.floor(st / cols) + 0.5) * sz;
+    const y = 0.9 + n * 0.05 + 0.02;
+    for (let j = 0; j < 30; j++) {
+      if (e >= MAX_EGGS) return;
+      dummy.position.set(cx - 0.12 + (j % 6) * 0.048, y, cz - 0.1 + Math.floor(j / 6) * 0.05);
+      dummy.scale.set(0.02, 0.026, 0.02); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+      eggMesh.setMatrixAt(e++, dummy.matrix);
+    }
+  });
   L.nests.forEach((n, k) => {
     const c = Math.min(4, Math.ceil(flock.nestEggs[k] / 10));
     for (let j = 0; j < c; j++) egg(n.x + (n.x < 0 ? 0.3 : -0.3), 0.72, n.z - 0.3 + j * 0.2);
   });
   for (const f of flock.floorEggs) egg(f.x, 0.05, f.z);
-  const tableEggs = Math.min(60, Math.ceil(flock.today.delivered / 30));
-  const et = center(L.eggTable);
-  for (let k = 0; k < tableEggs; k++) egg(et.x - 0.8 + (k % 15) * 0.11, 0.95 + Math.floor(k / 15) * 0.0, et.z - 0.3 + Math.floor(k / 15) * 0.15);
   eggMesh.count = e;
   eggMesh.instanceMatrix.needsUpdate = true;
 }
@@ -1240,7 +1269,7 @@ function frame(now: number) {
 
 // Hook for automated checks.
 (window as unknown as { __poultry: unknown }).__poultry = {
-  staff, flock, gears, select: (s: Sel | null) => select(s), feeds: feedOrder,
+  staff, flock, gears, select: (s: Sel | null) => select(s), feeds: feedOrder, look: (x: number, z: number, d: number) => flyTo(x, z, d),
   advance: (min: number) => { for (let k = 0; k < min * 60; k++) { flock.step(1 / 60); staff.step(1 / 60); } },
 };
 
