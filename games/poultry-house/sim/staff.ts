@@ -70,7 +70,7 @@ export class Staff {
       inside: false, manual: false, eggs: 0, fedSlot: -1, eggDay: -1, litterDay: -1, sacks: 0, kg: 0,
     });
     this.workers = [
-      mk(0, "Abebe Kebede", "attendant", -1, "Attendant · Pens 1 and 3"),
+      mk(0, "Gizachew Habte", "attendant", -1, "Attendant · Pens 1 and 3"),
       mk(1, "Tigist Alemu", "attendant", 1, "Attendant · Pens 2 and 4"),
       mk(2, "Dr. Selam Haile", "vet", 0, "Vet"),
       mk(3, "Unknown person", "stranger", 0, "Not on the staff list"),
