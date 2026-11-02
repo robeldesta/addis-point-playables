@@ -62,7 +62,7 @@ export class Flock {
   weeks = 10;
   alerts: Alert[] = [];
   log: { t: number; text: string }[] = [];
-  stats = { died: 0, removed: 0, treated: 0, recovered: 0, laid: 0, floorLaid: 0, floorLost: 0, delivered: 0, aiEggs: 0, cracked: 0, feedBags: 120 };
+  stats = { died: 0, removed: 0, treated: 0, recovered: 0, laid: 0, floorLaid: 0, floorLost: 0, delivered: 0, aiEggs: 0, cracked: 0, feedBags: 60 };
   today = { laid: 0, delivered: 0, died: 0 };
   yesterday: { laid: number; delivered: number; died: number } | null = null;
 
@@ -275,6 +275,12 @@ export class Flock {
     if (this.log.length > 60) this.log.length = 60;
   }
   /** Something the AI computer noticed outside the flock itself (people, theft). */
+  /** Someone checked a flagged hen and she is fine. */
+  cleared(i: number): void {
+    this.flag[i] &= ~1;
+    this.low[i] = 0;
+    this.closeAlerts((a) => a.bird === i && a.kind === "sick");
+  }
   report(kind: AlertKind, x: number, z: number, text: string): void { this.alert(kind, -1, x, z, text); }
   private alert(kind: AlertKind, bird: number, x: number, z: number, text: string): void {
     this.alerts.unshift({ id: this.nextId++, kind, bird, x, z, t: this.time, done: false, text });
@@ -311,21 +317,6 @@ export class Flock {
     }
   }
 
-  private refill(): void {
-    let alive = 0;
-    for (let i = 0; i < this.n; i++) if (this.st[i] < DEAD) alive++;
-    const kg = alive * 0.11 / 2; // two feeds a day, about 110 g per bird per day
-    const bags = Math.ceil(kg / 50);
-    this.stats.feedBags -= bags;
-    this.addLog(`Feeders refilled: ${bags} bags (${Math.round(kg)} kg) out of the store` + (this.feedCam ? " · counted by aisle camera" : " · not seen, no aisle camera"));
-    if (this.stats.feedBags < 20) {
-      this.alert("feed", -1, (this.L.feedStore.x0 + this.L.feedStore.x1) / 2, (this.L.feedStore.z0 + this.L.feedStore.z1) / 2,
-        `Feed store low: ${Math.max(0, this.stats.feedBags)} bags left`);
-      this.stats.feedBags += 120;
-      this.addLog("Feed delivery: 120 bags in");
-    }
-  }
-
   private tick(dt: number): void {
     const prev = this.time;
     this.time += dt;
@@ -336,7 +327,7 @@ export class Flock {
       this.today = { laid: 0, delivered: 0, died: 0 };
       if (this.laying) this.planLaying();
     }
-    if (this.crossed(prev, 7 * 60) || this.crossed(prev, 15 * 60)) this.refill();
+    // Feed now leaves the store with the attendants (see staff.ts), so it is logged per round.
 
     const light = this.lightsOn();
     const mod = this.minuteOfDay();

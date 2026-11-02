@@ -8,6 +8,7 @@ import { DEFAULT_DIMS, GATE_W, Layout, buildLayout, center, inRect, mountY, rect
 import { CoverMap, Gear, LENS, autoPlace, coversBackDoor, coversDoor, coversEggTable, coversFeedStore, footprint } from "./sim/gear";
 import { Alert, DEAD, Flock, GONE, HEALTHY, SICK } from "./sim/flock";
 import { Staff, Worker } from "./sim/staff";
+import { CRATE, Kpi, emptyKpi } from "./sim/records";
 import { Person, makePerson, posePerson } from "./person";
 
 // ------------------------------------------------------------------ state
@@ -35,7 +36,7 @@ type Sel =
   | { kind: "feeder"; k: number }
   | { kind: "drinker"; k: number }
   | { kind: "nest"; k: number }
-  | { kind: "table" | "pc" | "store" | "maindoor" | "backdoor" };
+  | { kind: "table" | "pc" | "store" | "scale" | "maindoor" | "backdoor" };
 let sel: Sel | null = null;
 let follow: Worker | null = null;
 let speed = 1;
@@ -180,6 +181,7 @@ let markerMesh: THREE.InstancedMesh;
 let eggMesh: THREE.InstancedMesh;
 let trayMesh: THREE.InstancedMesh;
 let bagsGroup: THREE.Group;
+let sacksGroup: THREE.Group;
 let crew: { p: Person; tag: THREE.Sprite; text: string }[] = [];
 const MAX_MARKERS = 400;
 const MAX_EGGS = 4000;
@@ -335,7 +337,21 @@ function buildWorld() {
   pc.position.set(L.pc.x - 0.3, 0, L.pc.z - 0.2);
   const pcL = label("AI computer", 0.55);
   pcL.position.set(L.pc.x - 0.6, 1.9, L.pc.z);
-  world.add(store, fsL, table, etL, pc, pcL);
+  // Litter scale: sacks of litter are weighed here, then go to fertilizer production.
+  sacksGroup = new THREE.Group();
+  const ls = L.litterScale;
+  const scale = pickable(new THREE.Group(), { kind: "scale" });
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 1.1), mat(0x8a9399));
+  plate.position.y = 0.04;
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.1, 0.08), mat(0x555b60));
+  post.position.set(0.5, 0.55, 0.5);
+  const dial = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.24, 0.08), mat(0x222222));
+  dial.position.set(0.5, 1.15, 0.5);
+  scale.add(plate, post, dial);
+  scale.position.set(ls.x, 0, ls.z);
+  const lsL = label("Litter scale", 0.55);
+  lsL.position.set(ls.x, 1.9, ls.z);
+  world.add(store, fsL, table, etL, pc, pcL, scale, lsL, sacksGroup);
 
   // Birds: an instanced body and head for every bird.
   birdBody = pickable(new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 8), mat(0xffffff), flock.n), (i) => ({ kind: "hen", i }));
@@ -360,6 +376,7 @@ function buildWorld() {
   crew = staff.workers.map((w) => {
     const look = w.role === "vet" ? { coat: 0xf4f4f4, trousers: 0x455a64, hat: 0 }
       : w.role === "stranger" ? { coat: 0x2b2b2b, trousers: 0x1a1a1a, hat: 0x111111, skin: 0x4a3020 }
+      : w.role === "visitor" ? [{ coat: 0x8d5524, trousers: 0x3e2723, hat: 0xd84315 }, { coat: 0x6a1b9a, trousers: 0x263238, hat: 0 }, { coat: 0x558b2f, trousers: 0x33691e, hat: 0xfbc02d }][(w.id - 4) % 3]
       : { coat: w.side < 0 ? 0x1f4e8c : 0x2e6b3a, trousers: w.side < 0 ? 0x1f4e8c : 0x2e6b3a, hat: 0xf5c542, skin: w.side < 0 ? 0x5a3a28 : 0x7a5038 };
     const p = makePerson(look);
     p.root.traverse((o) => { o.userData.sel = { kind: "worker", w } as Sel; });
@@ -383,6 +400,22 @@ function updateBags() {
     const col = k % 5, layer = Math.floor(k / 5);
     b.position.set(fs.x0 + 0.35 + col * 0.58, 0.09 + layer * 0.19, (fs.z0 + fs.z1) / 2);
     bagsGroup.add(b);
+  }
+}
+
+/** Litter sacks waiting by the scale for the fertilizer plant. */
+function updateSacks() {
+  sacksGroup.clear();
+  const ls = L.litterScale;
+  const m = mat(0x5d4a36);
+  const geo = new THREE.SphereGeometry(0.24, 10, 8);
+  const n = Math.min(24, staff.rec.litterSacks);
+  for (let k = 0; k < n; k++) {
+    const b = new THREE.Mesh(geo, m);
+    b.scale.set(1, 1.25, 0.9);
+    const col = k % 6, layer = Math.floor(k / 6);
+    b.position.set(ls.x + 0.9 + (col % 3) * 0.48, 0.3 + layer * 0.42, ls.z - 0.4 + Math.floor(col / 3) * 0.5);
+    sacksGroup.add(b);
   }
 }
 
@@ -531,8 +564,8 @@ function updateBirds() {
     dummy.position.set(x, y, z); dummy.scale.set(0.045, 0.06, 0.045); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
     eggMesh.setMatrixAt(e++, dummy.matrix);
   };
-  // Egg table first so it always shows: today's eggs stacked in trays of 30.
-  const trays = Math.min(MAX_TRAYS, Math.ceil(flock.today.delivered / 30));
+  // Egg table first so it always shows: eggs counted and not yet picked up, in trays of 30.
+  const trays = Math.min(MAX_TRAYS, Math.ceil(staff.rec.store / 30));
   const et = L.eggTable;
   const cols = 6, rows = 3, stacks = cols * rows;
   const sx = (et.x1 - et.x0) / cols, sz = (et.z1 - et.z0) / rows;
@@ -566,37 +599,71 @@ function updateBirds() {
   eggMesh.instanceMatrix.needsUpdate = true;
 }
 
-/** A floating sign above a worker saying who they are and what they're doing (house view only). */
+/** A box above each person: who the AI says they are, what they are doing, and today's numbers. */
 function workerTag(): THREE.Sprite {
   const c = document.createElement("canvas");
-  c.width = 512; c.height = 72;
+  c.width = 560; c.height = 176;
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
-  s.scale.set(3.6, 0.5, 1);
+  s.scale.set(3.2, 1.006, 1);
   s.center.set(0.5, 0);
   s.renderOrder = 11;
   labels.push(s);
   return s;
 }
-function writeTag(s: THREE.Sprite, text: string, color: string) {
+function writeTag(s: THREE.Sprite, lines: string[], color: string, bad: boolean) {
   const tex = (s.material as THREE.SpriteMaterial).map as THREE.CanvasTexture;
   const c = tex.image as HTMLCanvasElement;
   const ctx = c.getContext("2d")!;
   ctx.clearRect(0, 0, c.width, c.height);
-  ctx.font = "bold 38px system-ui, Arial";
-  const w = Math.min(c.width, ctx.measureText(text).width + 52);
+  const [name, id, what, nums] = lines;
+  ctx.font = "bold 36px system-ui, Arial";
+  const wName = ctx.measureText(name).width;
+  ctx.font = "bold 22px system-ui, Arial";
+  const wId = ctx.measureText(id).width;
+  ctx.font = "26px system-ui, Arial";
+  const w = Math.min(c.width, Math.max(wName + wId + 90, ctx.measureText(what).width + 36, ctx.measureText(nums).width + 36));
   const x0 = (c.width - w) / 2;
-  ctx.fillStyle = "rgba(28,24,20,.82)";
-  ctx.beginPath(); ctx.roundRect(x0, 4, w, 62, 16); ctx.fill();
+  ctx.fillStyle = "rgba(24,21,18,.88)";
+  ctx.beginPath(); ctx.roundRect(x0, 2, w, 158, 14); ctx.fill();
   ctx.fillStyle = color;
-  ctx.beginPath(); ctx.arc(x0 + 22, 35, 9, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#fff";
+  ctx.fillRect(x0, 2, 8, 158);
+  ctx.beginPath(); ctx.moveTo(c.width / 2 - 12, 160); ctx.lineTo(c.width / 2 + 12, 160); ctx.lineTo(c.width / 2, 174); ctx.fill();
   ctx.textBaseline = "middle";
-  ctx.fillText(text, x0 + 38, 37, w - 46);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 36px system-ui, Arial";
+  ctx.fillText(name, x0 + 22, 30, w - wId - 70);
+  // The AI's identification badge.
+  ctx.font = "bold 22px system-ui, Arial";
+  const bx = x0 + w - wId - 30;
+  ctx.fillStyle = bad ? "#ef5350" : "#2e7d32";
+  ctx.beginPath(); ctx.roundRect(bx - 6, 14, wId + 24, 32, 8); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillText(id, bx + 6, 31);
+  ctx.font = "26px system-ui, Arial";
+  ctx.fillStyle = "#e8dccb";
+  ctx.fillText(what, x0 + 22, 80, w - 36);
+  ctx.fillStyle = bad ? "#ff8a80" : "#f5c542";
+  ctx.font = "bold 26px system-ui, Arial";
+  ctx.fillText(nums, x0 + 22, 126, w - 36);
   tex.needsUpdate = true;
 }
-const workerColor = (w: Worker) => w.role === "vet" ? "#ffffff" : w.role === "stranger" ? "#ef5350" : w.side < 0 ? "#4f8fe0" : "#5fbf6f";
+const workerColor = (w: Worker) => w.role === "vet" ? "#ffffff" : w.role === "stranger" ? "#ef5350" : w.role === "visitor" ? "#ffb74d" : w.side < 0 ? "#4f8fe0" : "#5fbf6f";
+const minutes = (r: number[]) => r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : 0;
+
+/** The four lines in the box above a person. */
+function tagLines(w: Worker): string[] {
+  const k = staff.rec.kpi.get(w.id) ?? emptyKpi();
+  const id = w.role === "stranger" ? "NO MATCH" : w.role === "visitor" ? "VISITOR ✓" : "STAFF ✓";
+  const what = `${w.title}${w.doing ? ` · ${w.doing}` : ""}`;
+  let nums = "";
+  if (w.role === "attendant") nums = `Eggs ${k.eggs.toLocaleString()} · Feeders ${k.feeders} · Bags ${k.bags} · Litter ${k.kg} kg`;
+  else if (w.role === "vet") nums = `Checked ${k.checked} · Treated ${k.treated} · Removed ${k.removed} · Reply ${minutes(k.response)} min`;
+  else if (w.role === "stranger") nums = w.carry === "bag" ? "Carrying a feed bag · reported" : "Outside working hours · reported";
+  else nums = w.carry === "bag" ? "Carrying a sack" : w.carry === "tray" ? "Carrying egg crates" : "Every load booked";
+  return [(w.manual ? "You · " : "") + w.name, id, what, nums];
+}
 
 function updateCrew(t: number) {
   staff.workers.forEach((w, k) => {
@@ -604,8 +671,10 @@ function updateCrew(t: number) {
     posePerson(c.p, w.x, w.z, w.heading, w.pose, w.carry, t);
     c.tag.visible = w.pose !== "away";
     c.tag.position.set(c.p.root.position.x, 2.05, c.p.root.position.z);
-    const text = (w.manual ? "You · " : "") + w.name + (w.doing ? ` · ${w.doing}` : "");
-    if (text !== c.text) { c.text = text; writeTag(c.tag, text, workerColor(w)); }
+    if (!c.tag.visible) return;
+    const lines = tagLines(w);
+    const text = lines.join("|");
+    if (text !== c.text) { c.text = text; writeTag(c.tag, lines, workerColor(w), w.role === "stranger"); }
   });
 }
 
@@ -630,6 +699,7 @@ function selPos(s: Sel): { x: number; z: number; r: number } | null {
     case "table": return { ...center(L.eggTable), r: 1.3 };
     case "store": return { ...center(L.feedStore), r: 1.8 };
     case "pc": return { x: L.pc.x - 0.3, z: L.pc.z - 0.2, r: 0.9 };
+    case "scale": return { x: L.litterScale.x + 0.6, z: L.litterScale.z, r: 1.3 };
     case "maindoor": return { x: L.mainDoor.x, z: L.mainDoor.z - 0.6, r: 1.6 };
     case "backdoor": return { x: L.backDoor.x, z: L.backDoor.z + 0.6, r: 1.4 };
   }
@@ -710,13 +780,20 @@ function renderInfo(force = false) {
       const w = s.w;
       title = w.name;
       tag = w.pose === "away" ? `<span class="tag">Not in</span>` : `<span class="tag ${w.role === "stranger" ? "bad" : "blue"}">${esc(w.doing || "Standing by")}</span>`;
-      if (w.role === "attendant") fact("Looks after", w.side < 0 ? "Pens 1 and 3" : "Pens 2 and 4");
-      if (w.role === "vet") fact("Job", "sees to hens the AI flags");
-      if (w.role === "stranger") fact("Job", "none: not on the staff list");
+      fact("AI identity", w.role === "stranger" ? "no match, not on the staff list" : w.role === "visitor" ? "registered visitor" : "staff, face matched");
+      fact("Job", esc(w.title));
+      const k = staff.rec.kpi.get(w.id) ?? emptyKpi();
+      if (w.role === "attendant") {
+        fact("Eggs picked today", `${k.eggs.toLocaleString()} in ${k.trips} trips`);
+        fact("Feed today", `${k.bags} bags into ${k.feeders} feeders`);
+        fact("Drinkers checked", String(k.drinkers));
+        fact("Litter weighed out", `${k.kg} kg in ${k.sacks} sacks`);
+      }
+      if (w.role === "vet") { fact("Hens checked", String(k.checked)); fact("Treated / removed", `${k.treated} / ${k.removed}`); fact("Average reply to AI alert", `${minutes(k.response)} min`); }
       if (w.eggs) fact("Eggs in tray", String(w.eggs));
       if (w.pose !== "away") { const c = camAt(w.x, w.z); fact("Seen by", c ? camNo(c) : nearDoor(w) ? "door camera" : "no camera"); }
       btns = (w.pose !== "away" ? `<button class="btn ghost" data-act="follow">${follow === w ? "Stop following" : "Follow"}</button>` : "") +
-        (w.role !== "stranger" ? `<button class="btn" data-act="${w.manual ? "release" : "play"}">${w.manual ? "Stop playing" : "Play as " + esc(w.name)}</button>` : "");
+        (w.role === "attendant" || w.role === "vet" ? `<button class="btn" data-act="${w.manual ? "release" : "play"}">${w.manual ? "Stop playing" : "Play as " + esc(w.name)}</button>` : "");
       break;
     }
     case "feeder": {
@@ -736,15 +813,35 @@ function renderInfo(force = false) {
       break;
     }
     case "nest": title = "Nest box"; fact("Eggs in it", String(flock.nestEggs[s.k])); fact("In", L.pens[L.nests[s.k].pen].name); break;
-    case "table": title = "Egg table"; fact("Counted today", flock.today.delivered.toLocaleString()); if (flock.yesterday) fact("Yesterday", flock.yesterday.delivered.toLocaleString()); fact("Laid today", flock.today.laid.toLocaleString()); fact("Counted by", staff.eggCamera ? "egg table camera" : "hand"); break;
-    case "store": title = "Feed store"; fact("Bags", String(Math.max(0, flock.stats.feedBags))); fact("Watched by", flock.feedCam ? "main door camera" : "no camera"); break;
+    case "table": title = "Egg table"; fact("Waiting for pick-up", `${staff.rec.store.toLocaleString()} eggs (${Math.floor(staff.rec.store / CRATE)} crates)`); fact("Counted today", flock.today.delivered.toLocaleString()); if (flock.yesterday) fact("Yesterday", flock.yesterday.delivered.toLocaleString()); fact("Laid today", flock.today.laid.toLocaleString()); fact("Counted by", staff.eggCamera ? "egg table camera" : "hand"); break;
+    case "store": {
+      title = "Feed store";
+      const gap = staff.rec.book - flock.stats.feedBags;
+      tag = gap > 0 ? `<span class="tag bad">${gap} bags short</span>` : `<span class="tag good">Matches the books</span>`;
+      fact("By the books", `${staff.rec.book} bags`);
+      fact("Camera count", `${Math.max(0, flock.stats.feedBags)} bags`);
+      fact("Issued today", `${staff.rec.feedUsedToday} bags`);
+      fact("Watched by", flock.feedCam ? "main door camera" : "no camera");
+      btns = `<button class="btn" data-act="dash:feed">Open feed ledger</button>`;
+      break;
+    }
+    case "scale": {
+      const r = staff.rec;
+      title = "Litter scale";
+      fact("Waiting for the fertilizer plant", `${r.litterStore.toLocaleString()} kg in ${r.litterSacks} sacks`);
+      fact("Weighed out today", `${r.litterOutToday.toLocaleString()} kg`);
+      fact("Sent to fertilizer so far", `${r.fertilizerTotal.toLocaleString()} kg in ${r.batches} batches`);
+      fact("Still in the house (estimate)", `${Math.round(r.litterInHouse).toLocaleString()} kg`);
+      btns = `<button class="btn" data-act="dash:litter">Open litter ledger</button>`;
+      break;
+    }
     case "maindoor": title = "Main door"; fact("Camera", flock.doorCam ? "yes, logs everyone in and out" : "none"); break;
     case "backdoor": title = "Back door"; fact("Camera", staff.backDoorCamera ? "yes" : "none"); break;
     case "pc": {
       title = "AI computer";
       fact("Watching", `${gears.filter((g) => g.kind !== "sensor").length} cameras, ${gears.filter((g) => g.kind === "sensor").length} sensors`);
       fact("Open incidents", String(openIncidents().length));
-      btns = `<button class="btn" data-act="openlog">Open the log</button>`;
+      btns = `<button class="btn" data-act="openlog">Open the log</button><button class="btn" data-act="dash:overview">Dashboard</button>`;
       break;
     }
   }
@@ -770,6 +867,7 @@ infoEl.addEventListener("click", (e) => {
     case "close": select(null); return;
     case "opencam": if (s?.kind === "cam") { showCams(true); pickFeed(feedOrder().indexOf(s.g)); } return;
     case "openlog": showLog(true); return;
+    case "dash:feed": case "dash:litter": case "dash:overview": showDash(true, a.dataset.act.slice(5) as DashTab); return;
     case "follow": if (s?.kind === "worker") { follow = follow === s.w ? null : s.w; renderInfo(true); } return;
     case "play": if (s?.kind === "worker") { staff.takeOver(s.w); follow = s.w; select(null); } return;
     case "release": staff.takeOver(null); follow = null; renderInfo(true); return;
@@ -877,7 +975,7 @@ function showLog(on: boolean) {
   logBtn.classList.toggle("on", on);
   if (on) renderLog();
 }
-logBtn.addEventListener("click", () => { if (view === "cams") showCams(false); showLog(logEl.classList.contains("hidden")); });
+logBtn.addEventListener("click", () => { if (view === "cams") showCams(false); if (dashOpen) showDash(false); showLog(logEl.classList.contains("hidden")); });
 
 function renderLog() {
   let alive = 0, sick = 0;
@@ -915,6 +1013,144 @@ function maxAmmonia(): number {
   let m = 0;
   for (const s of flock.sensors) m = Math.max(m, flock.ammonia(s.x, s.z));
   return m;
+}
+
+// ------------------------------------------------------------------ dashboard: the AI computer's database
+type DashTab = "overview" | "feed" | "eggs" | "litter" | "staff";
+const dashEl = document.getElementById("dash")!;
+const dashBtn = document.getElementById("dashBtn")!;
+let dashOpen = false, dashTab: DashTab = "overview", dashDay: "today" | "yesterday" = "today", dashKey = "";
+
+function showDash(on: boolean, tab?: DashTab) {
+  if (tab) dashTab = tab;
+  dashOpen = on;
+  if (on) { if (view === "cams") showCams(false); showLog(false); }
+  dashEl.classList.toggle("hidden", !on);
+  dashBtn.classList.toggle("on", on);
+  controls.enabled = !on && view === "house";
+  dashKey = "";
+  if (on) renderDash();
+}
+dashBtn.addEventListener("click", () => showDash(!dashOpen));
+dashEl.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("[data-tab],[data-day],[data-close]") as HTMLElement | null;
+  if (!b) return;
+  if (b.dataset.close !== undefined) { showDash(false); return; }
+  if (b.dataset.tab) dashTab = b.dataset.tab as DashTab;
+  if (b.dataset.day) dashDay = b.dataset.day as "today" | "yesterday";
+  dashKey = "";
+  renderDash();
+});
+
+const when = (t: number) => `D${Math.floor(t / 1440) + 1} ${hhmm(t)}`;
+const n0 = (v: number) => (Math.round(v) || 0).toLocaleString();
+const signed = (v: number) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toLocaleString();
+const cam = (c: boolean) => c ? `<span class="ok">✓</span>` : `<span class="no">—</span>`;
+const tile = (k: string, v: string, sub = "", tone = "") => `<div class="tile ${tone}"><span>${k}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+function table(cols: string[], rows: string[][], right: number[]): string {
+  const th = cols.map((c, i) => `<th class="${right.includes(i) ? "r" : ""}">${c}</th>`).join("");
+  const tr = rows.map((r) => `<tr>${r.map((c, i) => `<td class="${right.includes(i) ? "r" : ""}">${c}</td>`).join("")}</tr>`).join("");
+  return `<div class="tbl"><table><thead><tr>${th}</tr></thead><tbody>${tr || `<tr><td colspan="${cols.length}" class="empty">No rows yet</td></tr>`}</tbody></table></div>`;
+}
+
+function dashNumbers() {
+  const r = staff.rec;
+  const start = (flock.day() - 1) * 1440;
+  let alive = 0;
+  for (let i = 0; i < flock.n; i++) if (flock.st[i] < DEAD) alive++;
+  const sum = <T,>(rows: T[], f: (x: T) => number, ok: (x: T) => boolean) => rows.reduce((a, x) => a + (ok(x) ? f(x) : 0), 0);
+  const today = (x: { t: number }) => x.t >= start;
+  return {
+    alive,
+    picked: -sum(r.eggs, (x) => x.eggs, (x) => today(x) && x.type === "Picked up"),
+    missing: -sum(r.eggs, (x) => x.eggs, (x) => today(x) && x.type === "Missing"),
+    delivered: sum(r.feed, (x) => x.bags, (x) => today(x) && x.type === "Delivery"),
+    unbooked: -sum(r.feed, (x) => x.bags, (x) => x.type === "Taken, not booked"),
+    issuedKg: -sum(r.litter, (x) => x.kg, (x) => today(x) && x.type === "Issued to fertilizer"),
+  };
+}
+
+function renderDash() {
+  const r = staff.rec, N = dashNumbers();
+  const gap = r.book - flock.stats.feedBags;
+  const gPerHen = N.alive ? (r.feedUsedToday * 50000) / N.alive : 0;
+  const vet = r.kpi.get(2) ?? emptyKpi();
+  let body = "";
+  if (dashTab === "overview") {
+    body = `
+      <h3>Eggs</h3><div class="tiles">
+        ${tile("Laid today (roof cameras)", n0(flock.today.laid), `${N.alive ? ((flock.today.laid / N.alive) * 100).toFixed(1) : 0}% of hens so far`)}
+        ${tile("Counted at the table", n0(flock.today.delivered), "egg table camera")}
+        ${tile("Picked up by buyer", n0(N.picked), `${N.picked / CRATE} crates`)}
+        ${tile("Waiting on the table", n0(r.store), `${Math.floor(r.store / CRATE)} full crates`)}
+        ${tile("Missing today", n0(N.missing), N.missing ? "see Eggs ledger" : "none", N.missing ? "bad" : "good")}
+        ${flock.yesterday ? tile("Yesterday laid / counted", `${n0(flock.yesterday.laid)} / ${n0(flock.yesterday.delivered)}`, `laying rate ${((flock.yesterday.laid / N.alive) * 100).toFixed(1)}%`) : ""}
+      </div>
+      <h3>Feed</h3><div class="tiles">
+        ${tile("Bags by the books", n0(r.book), "receipts minus issues")}
+        ${tile("Bags the camera counts", n0(Math.max(0, flock.stats.feedBags)), "feed store")}
+        ${tile("Gap", n0(gap), gap > 0 ? `${N.unbooked} taken without booking` : "books match", gap > 0 ? "bad" : "good")}
+        ${tile("Issued today", `${r.feedUsedToday} bags`, `${gPerHen.toFixed(0)} g a hen so far`)}
+        ${tile("Delivered today", `${N.delivered} bags`)}
+      </div>
+      <h3>Litter → fertilizer</h3><div class="tiles">
+        ${tile("Weighed out today", `${n0(r.litterOutToday)} kg`)}
+        ${tile("At the scale", `${n0(r.litterStore)} kg`, `${r.litterSacks} sacks`)}
+        ${tile("Issued to fertilizer today", `${n0(N.issuedKg)} kg`)}
+        ${tile("Issued in total", `${n0(r.fertilizerTotal)} kg`, `${r.batches} batches`)}
+        ${tile("Still in the house", `${n0(r.litterInHouse)} kg`, "estimate, 100 g a hen a day")}
+      </div>
+      <h3>Flock and vet</h3><div class="tiles">
+        ${tile("Hens alive", n0(N.alive))}
+        ${tile("Died today", String(flock.today.died), `${((flock.stats.died / flock.n) * 100).toFixed(2)}% since start`)}
+        ${tile("Hens checked by vet", String(vet.checked), `${vet.treated} treated, ${vet.removed} removed`)}
+        ${tile("Vet reply to AI alert", `${minutes(vet.response)} min`, "average today")}
+        ${tile("Open incidents", String(openIncidents().length), "", openIncidents().some((a) => ["intruder", "feedtheft", "eggtheft"].includes(a.kind)) ? "bad" : "")}
+      </div>`;
+  } else if (dashTab === "feed") {
+    body = `<div class="tiles">${tile("By the books", `${r.book} bags`)}${tile("Camera count", `${Math.max(0, flock.stats.feedBags)} bags`)}${tile("Gap", `${gap} bags`, "", gap > 0 ? "bad" : "good")}${tile("Issued today", `${r.feedUsedToday} bags`)}${tile("Yesterday", `${r.feedUsedYesterday} bags`)}</div>
+      <h3>feed_ledger · ${r.feed.length} rows</h3>` +
+      table(["#", "Time", "Type", "Bags", "By", "Reference", "Book after", "Camera"],
+        r.feed.map((x) => [String(x.id), when(x.t), x.type === "Taken, not booked" ? `<span class="bad">${x.type}</span>` : x.type, signed(x.bags), esc(x.by), esc(x.note), String(x.book), cam(x.camera)]), [0, 3, 6]);
+  } else if (dashTab === "eggs") {
+    body = `<div class="tiles">${tile("Counted today", n0(flock.today.delivered))}${tile("Picked up today", n0(N.picked), `${N.picked / CRATE} crates`)}${tile("On the table", n0(r.store))}${tile("Missing today", n0(N.missing), "", N.missing ? "bad" : "good")}</div>
+      <h3>egg_ledger · ${r.eggs.length} rows</h3>` +
+      table(["#", "Time", "Type", "Eggs", "Crates", "By", "Reference", "On table after", "Camera"],
+        r.eggs.map((x) => [String(x.id), when(x.t), x.type === "Missing" ? `<span class="bad">${x.type}</span>` : x.type, signed(x.eggs), x.crates.toFixed(1), esc(x.by), esc(x.note), n0(x.store), cam(x.camera)]), [0, 3, 4, 7]);
+  } else if (dashTab === "litter") {
+    body = `<div class="tiles">${tile("Weighed out today", `${n0(r.litterOutToday)} kg`)}${tile("Yesterday", `${n0(r.litterOutYesterday)} kg`)}${tile("At the scale", `${n0(r.litterStore)} kg`, `${r.litterSacks} sacks`)}${tile("To fertilizer, total", `${n0(r.fertilizerTotal)} kg`, `${r.batches} batches`)}${tile("In the house", `${n0(r.litterInHouse)} kg`, "estimate")}</div>
+      <h3>litter_ledger · ${r.litter.length} rows</h3>` +
+      table(["#", "Time", "Type", "kg", "Sacks", "By", "Source / batch", "At scale after", "Camera"],
+        r.litter.map((x) => [String(x.id), when(x.t), x.type, signed(x.kg), signed(x.sacks), esc(x.by), esc(x.note), n0(x.store), cam(x.camera)]), [0, 3, 4, 7]);
+  } else {
+    const src = dashDay === "today" ? r.kpi : r.kpiYesterday;
+    const staffRows = staff.workers.filter((w) => w.role === "attendant" || w.role === "vet").map((w) => {
+      const k: Kpi = src.get(w.id) ?? emptyKpi();
+      return [`<b>${esc(w.name)}</b>`, esc(w.title), dashDay === "today" ? (w.inside ? esc(w.doing || "Standing by") : "Not in") : "", n0(k.eggs), String(k.trips), String(k.bags), String(k.feeders), String(k.drinkers), String(k.checked), String(k.treated), String(k.removed), `${k.kg}`, String(k.raked), w.role === "vet" ? `${minutes(k.response)}` : "", (k.metres / 1000).toFixed(1)];
+    });
+    body = `<div class="seg"><button data-day="today" class="${dashDay === "today" ? "on" : ""}">Today</button><button data-day="yesterday" class="${dashDay === "yesterday" ? "on" : ""}">Yesterday</button></div>
+      <h3>staff_kpi · ${dashDay}</h3>` +
+      table(["Name", "Job", "Now", "Eggs picked", "Table trips", "Feed bags", "Feeders filled", "Drinkers checked", "Hens checked", "Treated", "Dead removed", "Litter kg", "Wet spots raked", "Reply min", "km walked"], staffRows, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) +
+      `<h3>visitors_log</h3>` +
+      table(["Time", "Who", "AI identity", "Event"], flock.log.flatMap((l) => {
+        const w = staff.workers.find((q) => (q.role === "visitor" || q.role === "stranger") && l.text.startsWith(q.name));
+        return w ? [[when(l.t), esc(w.name), w.role === "stranger" ? `<span class="bad">No match · reported</span>` : esc(w.title), / left$/.test(l.text) ? "Left" : "Came in"]] : [];
+      }).slice(0, 30), []);
+  }
+  const tabs: [DashTab, string][] = [["overview", "Overview"], ["feed", "Feed"], ["eggs", "Eggs"], ["litter", "Litter"], ["staff", "Staff KPIs"]];
+  const html = `<div class="dhead"><h2>Dashboard <small>Day ${flock.day()} · ${flock.clock()}</small></h2>
+      <nav>${tabs.map(([k, v]) => `<button data-tab="${k}" class="${k === dashTab ? "on" : ""}">${v}</button>`).join("")}</nav>
+      <button class="x" data-close title="Close">✕</button></div><div class="dbody">${body}</div>`;
+  if (html === dashKey) return;
+  dashKey = html;
+  const scroller = dashEl.querySelector(".dbody");
+  const top = scroller ? scroller.scrollTop : 0;
+  const tbl = dashEl.querySelector(".tbl"), tl = tbl ? tbl.scrollLeft : 0;
+  dashEl.innerHTML = html;
+  const ns = dashEl.querySelector(".dbody");
+  if (ns) ns.scrollTop = top;
+  const nt = dashEl.querySelector(".tbl");
+  if (nt) nt.scrollLeft = tl;
 }
 
 // ------------------------------------------------------------------ cameras: what they see
@@ -966,7 +1202,7 @@ function showCams(on: boolean) {
     infoT = 0;
   }
 }
-camsBtn.addEventListener("click", () => showCams(true));
+camsBtn.addEventListener("click", () => { if (dashOpen) showDash(false); showCams(true); });
 houseBtn.addEventListener("click", () => showCams(false));
 monitorEl.addEventListener("scroll", () => (fullRedraw = true));
 function pickFeed(i: number) {
@@ -1130,12 +1366,12 @@ function drawAI(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, box: E
     }
     if (!seen) return;
     x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(W, x1); y1 = Math.min(H, y1);
-    const bad = w.role === "stranger";
-    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = bad ? "#ef5350" : "#4fc3f7";
+    const bad = w.role === "stranger", guest = w.role === "visitor";
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = bad ? "#ef5350" : guest ? "#ffb74d" : "#4fc3f7";
     ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
     const what = bad ? "UNKNOWN PERSON" + (w.carry === "bag" ? " · CARRYING FEED BAG" : "")
-      : `${w.name.toUpperCase()}${w.doing && !small ? ` · ${w.doing}` : ""}${w.carry === "tray" && w.eggs ? ` · ${w.eggs} EGGS` : ""}`;
-    tag((x0 + x1) / 2, y0, what, bad ? "#c62828" : "#0277bd");
+      : `${w.name.toUpperCase()}${small ? "" : ` · ${w.title}`}${w.doing && !small ? ` · ${w.doing}` : ""}${w.carry === "tray" && w.eggs ? ` · ${w.eggs} EGGS` : ""}`;
+    tag((x0 + x1) / 2, y0, what, bad ? "#c62828" : guest ? "#e65100" : "#0277bd");
   });
   ctx.font = `700 ${f}px ui-monospace, Menlo, monospace`;
   ctx.textBaseline = "top";
@@ -1212,7 +1448,7 @@ P.onResume(() => (paused = false));
 
 const clockEl = document.getElementById("clock")!;
 const dayEl = document.getElementById("day")!;
-let uiT = 0, floorT = 0, last = performance.now(), lastBags = -1;
+let uiT = 0, floorT = 0, last = performance.now(), lastBags = -1, lastSacks = -1;
 
 function frame(now: number) {
   requestAnimationFrame(frame);
@@ -1255,11 +1491,14 @@ function frame(now: number) {
       if (!logEl.classList.contains("hidden")) renderLog();
       if (view === "house") renderInfo();
       if (lastBags !== flock.stats.feedBags) { lastBags = flock.stats.feedBags; updateBags(); }
+      if (lastSacks !== staff.rec.litterSacks) { lastSacks = staff.rec.litterSacks; updateSacks(); }
+      if (dashOpen) renderDash();
     }
     if (floorT <= 0) { floorT = 2; drawFloor(); }
   }
   controls.update();
   renderer.setClearColor(scene.background as THREE.Color);
+  if (dashOpen) return; // the dashboard covers the house
   if (view === "cams") { renderMonitor(t); return; }
   renderer.setViewport(0, 0, renderer.domElement.clientWidth, renderer.domElement.clientHeight);
   renderer.clear();
@@ -1269,7 +1508,7 @@ function frame(now: number) {
 
 // Hook for automated checks.
 (window as unknown as { __poultry: unknown }).__poultry = {
-  staff, flock, gears, select: (s: Sel | null) => select(s), feeds: feedOrder, look: (x: number, z: number, d: number) => flyTo(x, z, d),
+  staff, flock, gears, rec: staff.rec, dash: (tab: DashTab) => showDash(true, tab), select: (s: Sel | null) => select(s), feeds: feedOrder, look: (x: number, z: number, d: number) => flyTo(x, z, d),
   advance: (min: number) => { for (let k = 0; k < min * 60; k++) { flock.step(1 / 60); staff.step(1 / 60); } },
 };
 

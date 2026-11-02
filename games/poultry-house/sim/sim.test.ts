@@ -147,8 +147,39 @@ describe("incidents", () => {
     expect(kinds).toContain("intruder");
     expect(kinds).toContain("feedtheft");
     expect(f.alerts.filter((a) => a.kind === "eggtheft").length).toBe(2); // back door camera + short count at the table
-    expect(f.stats.feedBags).toBeLessThan(bags);
+    expect(f.stats.feedBags).toBe(s.rec.book - 2); // two bags gone that the books never saw
+    expect(bags).toBe(60);
     expect(s.workers[3].inside).toBe(false); // the thief left
+  }, 60000);
+
+  test("a full day is booked: feed in and out, eggs counted and picked up, litter weighed and sent to fertilizer, staff KPIs", () => {
+    const L = buildLayout(DEFAULT_DIMS);
+    const f = new Flock(L);
+    f.cover = new CoverMap(L, autoPlace(L, "2.8"));
+    f.setWeeks(24);
+    f.time = 5 * 60 + 20;
+    const s = new Staff(L, f);
+    s.eggCamera = true;
+    for (let k = 0; k < 13 * 60 * 4; k++) { f.step(0.25); s.step(0.25); } // to 18:20
+    const r = s.rec;
+    const types = (rows: { type: string }[]) => new Set(rows.map((x) => x.type));
+    expect(types(r.feed)).toEqual(new Set(["Delivery", "Issued", "Taken, not booked"]));
+    expect(types(r.eggs)).toEqual(new Set(["Counted at table", "Picked up", "Missing"]));
+    expect(types(r.litter)).toEqual(new Set(["Weighed out", "Issued to fertilizer"]));
+    // The running balances add up.
+    expect(r.book).toBe(60 + r.feed.reduce((a, x) => a + (x.type === "Taken, not booked" ? 0 : x.bags), 0));
+    expect(r.store).toBe(r.eggs.reduce((a, x) => a + (x.type === "Missing" ? 0 : x.eggs), 0));
+    expect(r.litterStore).toBe(r.litter.reduce((a, x) => a + x.kg, 0));
+    expect(r.fertilizerTotal).toBeGreaterThan(200);
+    for (const id of [0, 1]) {
+      const k = r.of(id);
+      expect(k.eggs).toBeGreaterThan(1000);
+      expect(k.bags).toBeGreaterThan(0);
+      expect(k.feeders).toBeGreaterThan(80);
+      expect(k.kg).toBeGreaterThan(100);
+    }
+    expect(r.of(2).checked).toBeGreaterThan(0);
+    for (const w of s.workers.slice(3)) expect(w.inside).toBe(false); // visitors and the thief all left
   }, 60000);
 
   test("a player-controlled worker follows orders and does the work", () => {
