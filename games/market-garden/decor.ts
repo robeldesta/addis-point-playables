@@ -214,7 +214,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   const clouds: THREE.Group[] = [];
   for (let i = 0; i < 9; i++) {
     const cl = M.cloud();
-    cl.position.set(rand(-40, 40), rand(9, 12), rand(-30, 10));
+    cl.position.set(rand(-40, 40), rand(20, 23), rand(-40, 0)); // high above the camera so they never block the view
     scene.add(cl);
     clouds.push(cl);
   }
