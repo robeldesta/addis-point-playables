@@ -2,6 +2,8 @@
 
 Small web games built for YouTube Playables, using Vite + TypeScript. Market Garden uses Three.js (3D); the hello test uses Phaser 4.
 
+Poultry House (`games/poultry-house/`) is a Three.js planning sim for the EcoGreen layer farm: place AI cameras and sensors, check floor coverage and the shopping list, then play the farm roles (doctor, egg collector, litter keeper, manager). Its rules live in `games/poultry-house/sim/` with tests.
+
 ## Run locally
 
     npm install
