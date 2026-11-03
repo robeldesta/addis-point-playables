@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Strike Lane</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #120f1c; touch-action: none;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; font-family: Arial, Helvetica, sans-serif; }
+      #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      #board { position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+        display: flex; gap: 2px; z-index: 2; pointer-events: none; width: min(560px, calc(100vw - 12px)); }
+      .fr { flex: 1 1 0; min-width: 0; background: rgba(255,255,255,.93); border-radius: 6px; overflow: hidden;
+        display: flex; flex-direction: column; box-shadow: 0 2px 0 rgba(0,0,0,.35); }
+      .fr.ten { flex: 1.45 1 0; }
+      .fr.cur { outline: 3px solid #ffcc33; outline-offset: -1px; }
+      .fr .n { font-size: 9px; color: #fff; background: #3b2f63; text-align: center; line-height: 13px; font-weight: 800; }
+      .fr .r { display: flex; justify-content: flex-end; height: 15px; }
+      .fr .r span { width: 14px; font-size: 12px; font-weight: 900; color: #222; text-align: center; line-height: 15px;
+        border-left: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+      .fr .r span.x { color: #d32f2f; }
+      .fr .t { font-size: 14px; font-weight: 900; color: #1b1630; text-align: center; height: 18px; line-height: 18px; }
+      #info { position: fixed; top: calc(max(8px, env(safe-area-inset-top)) + 54px); left: 50%; transform: translateX(-50%);
+        color: #fff; font-weight: 800; font-size: 14px; background: rgba(20,14,40,.6); padding: 4px 12px;
+        border-radius: 999px; z-index: 2; pointer-events: none; white-space: nowrap; }
+      #hint { position: fixed; left: 50%; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px); transform: translateX(-50%);
+        background: rgba(20,14,40,.75); color: #fff; font-weight: 800; font-size: 17px; padding: 10px 18px; border-radius: 14px;
+        opacity: 0; transition: opacity .25s; pointer-events: none; white-space: nowrap; z-index: 2; }
+      #hint.show { opacity: 1; animation: nudge 1.6s ease-in-out infinite; }
+      @keyframes nudge { 50% { transform: translateX(-50%) translateY(-6px); } }
+      #big { position: fixed; left: 0; right: 0; top: 34%; text-align: center; font-weight: 900; font-size: min(17vw, 96px);
+        color: #ffcc33; -webkit-text-stroke: 3px #5a2a00; text-shadow: 0 6px 0 rgba(0,0,0,.35); opacity: 0;
+        transform: scale(.5); pointer-events: none; z-index: 3; letter-spacing: 2px; }
+      #big.show { animation: pop 1.3s ease-out forwards; }
+      #big.small { font-size: min(11vw, 60px); color: #fff; -webkit-text-stroke: 2px #2a1d55; }
+      @keyframes pop { 0% { opacity: 0; transform: scale(.4); } 15% { opacity: 1; transform: scale(1.15); }
+        25% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: scale(1.05) translateY(-20px); } }
+      #over { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 5;
+        background: rgba(10,6,24,.55); }
+      #over.show { display: flex; }
+      .card { background: #fff; border-radius: 20px; padding: 22px 26px; text-align: center; width: min(320px, calc(100vw - 48px));
+        box-shadow: 0 8px 0 rgba(0,0,0,.3); }
+      .card h2 { margin: 0 0 6px; color: #3b2f63; font-size: 22px; }
+      .card .score { font-size: 64px; font-weight: 900; color: #d32f2f; line-height: 1.1; }
+      .card .best { color: #555; font-weight: 700; margin: 4px 0 4px; }
+      .card .new { color: #2e7d32; font-weight: 900; min-height: 20px; }
+      .card button { margin-top: 14px; width: 100%; height: 54px; border: 0; border-radius: 14px; background: #ffb300;
+        color: #3a2200; font: 900 22px Arial, sans-serif; box-shadow: inset 0 -5px 0 rgba(0,0,0,.2); }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="board"></div>
+    <div id="info"></div>
+    <div id="hint">Slide to line up, flick up to bowl</div>
+    <div id="big"></div>
+    <div id="over">
+      <div class="card">
+        <h2>Game over</h2>
+        <div class="score" id="final">0</div>
+        <div class="best" id="bestline">Best: 0</div>
+        <div class="new" id="newbest"></div>
+        <button id="again">Bowl again</button>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
