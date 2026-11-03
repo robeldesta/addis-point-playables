@@ -2,9 +2,9 @@ import * as THREE from "three";
 import * as P from "../../src/platform/platform";
 import { Sfx } from "./sfx";
 import { R, Hit, scoreAt, spot, boardCanvas } from "./board";
+import { GameId, GAMES, checkout, x01Target, isBust, CRICKET_NUMS, cricketIdx, markSym } from "./rules";
 
 const GAME_ID = "darts";
-const START = 301;
 const ROUNDS = 10; // Score Attack length, 3 darts each
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const $ = (id: string) => document.getElementById(id)!;
@@ -360,27 +360,42 @@ canvas.addEventListener("pointercancel", () => (aiming = false));
 // ------------------------------------------------------------------
 type State = "menu" | "aim" | "fly" | "cpu" | "wait" | "over";
 let state: State = "menu";
-let mode: "duel" | "attack" = "duel";
+let game: GameId = "x501";
+let picked: GameId = "x501"; // game shown in the menu
 let level = 0;
 let whose: 0 | 1 = 0;
-const score = [START, START];
-let turnStart = START;
+const score = [0, 0];
+let turnStart = 0;
 let darts: Hit[] = [];
 let round = 1;
 let playerDarts = 0, playerPoints = 0;
-let best = 0, beaten = 0, wins = 0;
+let best = 0, bestNine = 0, wins = 0;
+let beaten: Record<string, number> = {};
+// cricket
+const marks = [[0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0]];
+const CRICKET_ROUNDS = 20;
+// english cricket
+let batting: 0 | 1 = 0, innings = 1, wickets = 0, overs = 0;
+const OVERS = 8;
+const NINE_DARTS = 9;
 
 // tiny scheduler that respects pause
 const timers: { t: number; f: () => void }[] = [];
 const later = (t: number, f: () => void) => timers.push({ t, f });
+const other = (w: 0 | 1): 0 | 1 => (w === 0 ? 1 : 0);
+const rivalName = () => RIVALS[level].name;
+const isX01 = () => game === "x501" || game === "x301" || game === "nine";
 
-function startGame(m: "duel" | "attack", lvl = 0) {
-  mode = m;
+function startGame(g: GameId, lvl = 0) {
+  game = g;
   level = lvl;
-  score[0] = score[1] = m === "duel" ? START : 0;
+  const start = g === "x501" || g === "nine" ? 501 : g === "x301" ? 301 : 0;
+  score[0] = score[1] = start;
   round = 1;
   whose = 0;
   playerDarts = playerPoints = 0;
+  marks.forEach((m) => m.fill(0));
+  batting = 0; innings = 1; wickets = 0; overs = 0;
   timers.length = 0;
   clearDarts();
   aim.x = 0;
@@ -389,7 +404,22 @@ function startGame(m: "duel" | "attack", lvl = 0) {
   $("over").classList.add("hide");
   $("hud").classList.remove("hide");
   $("turn").classList.remove("hide");
+  $("cric").classList.toggle("hide", g !== "cricket");
   beginTurn();
+}
+
+function playerHint(): string {
+  if (isX01()) {
+    const route = checkout(score[0], 3 - darts.length);
+    if (route) return "Finish: " + route.map((b) => b.label).join(" · ");
+    if (score[0] <= 170 && score[0] > 1) return `${score[0]} left · no finish this turn`;
+  }
+  if (game === "english") {
+    if (whose === batting) return `Batting: score over 40 for runs`;
+    return `Bowling: hit the bull for wickets`;
+  }
+  if (game === "cricket" && round === 1 && darts.length === 0) return "Close 20 to 15 and the bull";
+  return "Drag to aim · Hold still · Let go to throw";
 }
 
 function beginTurn() {
@@ -399,7 +429,7 @@ function beginTurn() {
   drawHud();
   if (whose === 0) {
     state = "aim";
-    hint(true, mode === "duel" && score[0] <= 60 ? `Need ${score[0]} to win` : "Drag to aim · Hold still · Let go to throw");
+    hint(true, playerHint());
   } else {
     state = "cpu";
     hint(false);
@@ -412,21 +442,30 @@ function playerThrow(x: number, y: number) {
   launch(x, y, 0);
 }
 
-let cpuAim = { x: 0, y: 0 };
-function cpuTarget(r: number) {
-  if (mode !== "duel" || r > 60) return spot(20, 3);
-  if (r === 50) return spot(25, 2);
-  if (r === 25) return spot(25, 1);
-  if (r <= 20) return spot(r, 1);
-  if (r <= 40 && r % 2 === 0) return spot(r / 2, 2);
-  if (r % 3 === 0) return spot(r / 3, 3);
-  if (r - 40 >= 1 && r - 40 <= 20) return spot(r - 40, 1);
-  return spot(r - 20, 1);
+function cpuTarget(): { x: number; y: number } {
+  if (isX01()) {
+    const b = x01Target(score[1], 3 - darts.length);
+    return spot(b.num, b.mult);
+  }
+  if (game === "english") return whose === batting ? spot(20, 3) : spot(25, 2);
+  if (game === "cricket") {
+    const me = marks[1], them = marks[0];
+    const behind = score[1] < score[0];
+    // Behind on points with a number to score on: cash in.
+    if (behind) {
+      const i = CRICKET_NUMS.findIndex((_, k) => me[k] >= 3 && them[k] < 3);
+      if (i >= 0) return spot(CRICKET_NUMS[i], CRICKET_NUMS[i] === 25 ? 2 : 3);
+    }
+    const open = CRICKET_NUMS.findIndex((_, k) => me[k] < 3);
+    if (open >= 0) return spot(CRICKET_NUMS[open], CRICKET_NUMS[open] === 25 ? 2 : 3);
+    const sc = CRICKET_NUMS.findIndex((_, k) => them[k] < 3);
+    if (sc >= 0) return spot(CRICKET_NUMS[sc], CRICKET_NUMS[sc] === 25 ? 2 : 3);
+  }
+  return spot(20, 3);
 }
 function cpuThrow() {
   if (state !== "cpu") return;
-  const t = cpuTarget(score[1]);
-  cpuAim = t;
+  const t = cpuTarget();
   const s = RIVALS[level].sigma;
   later(0.15, () => {
     if (state !== "cpu") return;
@@ -445,52 +484,129 @@ function landed(hit: Hit, at: THREE.Vector3) {
   }
   showMark(hit, at);
 
-  if (mode === "attack") {
+  if (game === "attack") {
     score[0] += hit.score;
     drawHud();
-    if (darts.length === 3) return endTurn(false);
-    return nextDart();
+    return darts.length === 3 ? endTurn(false) : nextDart();
   }
+  if (isX01()) return landedX01(hit);
+  if (game === "cricket") return landedCricket(hit);
+  return landedEnglish(hit);
+}
 
+function landedX01(hit: Hit) {
   const left = score[whose] - hit.score;
-  if (left < 0) {
+  if (isBust(left, hit)) {
     score[whose] = turnStart;
     drawHud();
     sfx.bust();
-    popup("BUST", whose === 0 ? "Too many! Score goes back" : `${RIVALS[level].name} busts`);
+    const why = left === 0 ? "Finish on a double!" : left === 1 ? "Can't finish on 1" : "Too many!";
+    popup("BUST", whose === 0 ? why : `${rivalName()} busts`);
     return endTurn(true);
   }
   score[whose] = left;
   drawHud();
   if (left === 0) {
     sfx.big();
-    popup("GAME SHOT!", hit.label);
+    popup(game === "nine" && playerDarts <= 9 ? "NINE-DARTER!" : "GAME SHOT!", hit.label);
     state = "wait";
     return later(1.8, () => finish(whose === 0));
   }
-  if (darts.length === 3) return endTurn(false);
-  nextDart();
+  if (game === "nine" && playerDarts >= NINE_DARTS) {
+    state = "wait";
+    return later(1.2, () => finish(false));
+  }
+  return darts.length === 3 ? endTurn(false) : nextDart();
+}
+
+function landedCricket(hit: Hit) {
+  const i = cricketIdx(hit);
+  if (i >= 0) {
+    const me = marks[whose], them = marks[other(whose)];
+    for (let m = 0; m < hit.mult; m++) {
+      if (me[i] < 3) me[i]++;
+      else if (them[i] < 3) score[whose] += CRICKET_NUMS[i];
+    }
+  }
+  drawHud();
+  const me = marks[whose];
+  if (me.every((m) => m >= 3) && score[whose] >= score[other(whose)]) {
+    sfx.big();
+    popup("CLOSED OUT!", whose === 0 ? "You win" : `${rivalName()} wins`);
+    state = "wait";
+    return later(1.8, () => finish(whose === 0));
+  }
+  return darts.length === 3 ? endTurn(false) : nextDart();
+}
+
+function landedEnglish(hit: Hit) {
+  if (whose !== batting) {
+    if (hit.num === 25) {
+      wickets = Math.min(10, wickets + (hit.mult === 2 ? 2 : 1));
+      sfx.coin();
+    }
+  }
+  drawHud();
+  return darts.length === 3 ? endTurn(false) : nextDart();
 }
 
 function nextDart() {
   state = whose === 0 ? "aim" : "cpu";
-  if (whose === 0 && mode === "duel" && score[0] <= 60) hint(true, `Need ${score[0]} to win`);
-  if (whose === 1) later(0.75, cpuThrow);
+  if (whose === 0) hint(true, playerHint());
+  else later(0.75, cpuThrow);
 }
 
 function endTurn(bust: boolean) {
   state = "wait";
   const total = darts.reduce((a, h) => a + h.score, 0);
-  if (!bust) {
+  const who = whose === 0 ? "" : rivalName();
+  let after: (() => boolean) | null = null; // returns true when the game ended
+
+  if (game === "english") {
+    if (whose === batting) {
+      const runs = Math.max(0, total - 40);
+      score[whose] += runs;
+      popup(runs ? `${runs} RUN${runs > 1 ? "S" : ""}` : "NO RUNS", total > 40 ? `${total} − 40` : `${total}: need over 40`);
+      if (runs >= 60) sfx.big(); else if (runs) sfx.coin();
+      // Chasing side passes the target: game over.
+      if (innings === 2 && score[batting] > score[other(batting)]) after = () => (finish(batting === 0), true);
+    } else {
+      overs++;
+      const w = darts.filter((h) => h.num === 25).reduce((a, h) => a + (h.mult === 2 ? 2 : 1), 0);
+      popup(w ? `${w} WICKET${w > 1 ? "S" : ""}` : "NO WICKETS", `${wickets}/10 · over ${overs} of ${OVERS}`);
+      if (wickets >= 10 || overs >= OVERS) {
+        after = () => {
+          if (innings === 2) return finish(score[0] > score[1]), true;
+          innings = 2; batting = other(batting); wickets = 0; overs = 0;
+          popup("INNINGS OVER", `${batting === 0 ? "You need" : rivalName() + " needs"} ${score[other(batting)] + 1} to win`);
+          return false;
+        };
+      }
+    }
+    drawHud();
+  } else if (game === "cricket") {
+    const m = darts.reduce((a, h) => a + (cricketIdx(h) >= 0 ? h.mult : 0), 0);
+    popup(m ? `${m} MARK${m > 1 ? "S" : ""}` : "NO MARKS", who);
+    if (whose === 1 && round >= CRICKET_ROUNDS) after = () => (finish(score[0] > score[1]), true);
+  } else if (!bust) {
     if (total === 180) { sfx.big(); popup("180!", "Maximum!"); }
     else if (total >= 100) { sfx.coin(); popup(String(total), "Ton+"); }
-    else popup(String(total), whose === 0 ? "" : RIVALS[level].name);
+    else popup(String(total), who);
   }
+
   later(1.5, () => {
-    if (mode === "attack") {
+    if (after && after()) return;
+    if (game === "attack") {
       round++;
       if (round > ROUNDS) return finish(true);
-    } else whose = whose === 0 ? 1 : 0;
+    } else if (game === "nine") {
+      if (playerDarts >= NINE_DARTS) return finish(false);
+      round++;
+    } else {
+      if (whose === 1) round++;
+      whose = other(whose);
+    }
+    if (game === "english" && after) whose = batting; // new innings: batter starts
     beginTurn();
   });
 }
@@ -500,44 +616,52 @@ function finish(playerWon: boolean) {
   hint(false);
   const avg = playerDarts ? ((playerPoints / playerDarts) * 3).toFixed(1) : "0";
   let title = "", text = "", again = "Play again";
-  if (mode === "attack") {
+  const vs = GAMES[game].vs;
+  if (game === "attack") {
     const s = score[0];
     const rec = s > best;
     if (rec) best = s;
     title = rec ? "New best!" : "Finished";
     text = `Score <b>${s}</b> · Best <b>${best}</b><br>3-dart average <b>${avg}</b>`;
     P.sendScore(best);
+  } else if (game === "nine") {
+    const got = 501 - score[0];
+    const rec = got > bestNine;
+    if (rec) bestNine = got;
+    title = playerWon ? "Perfect leg!" : rec ? "New best!" : "Out of darts";
+    text = playerWon ? `501 in <b>${playerDarts}</b> darts. Legendary.` : `You cleared <b>${got}</b> of 501 with 9 darts.<br>Best <b>${bestNine}</b>`;
   } else if (playerWon) {
     wins++;
-    const first = level === beaten;
-    if (first && beaten < RIVALS.length) beaten++;
+    const n = beaten[game] ?? 0;
+    const first = level === n;
+    if (first && n < RIVALS.length) beaten[game] = n + 1;
     title = "You win!";
-    text = `You beat <b>${RIVALS[level].name}</b> in ${playerDarts} darts.<br>3-dart average <b>${avg}</b>`;
-    if (level + 1 < RIVALS.length) {
-      text += first ? `<br>Next up: <b>${RIVALS[level + 1].name}</b>` : "";
-      again = `Next: ${RIVALS[level + 1].name}`;
-    } else text += "<br><b>You are the champion!</b>";
+    text = `You beat <b>${rivalName()}</b> at ${GAMES[game].name}.<br>` +
+      (game === "english" ? `Runs <b>${score[0]}</b> to <b>${score[1]}</b>` : game === "cricket" ? `Points <b>${score[0]}</b> to <b>${score[1]}</b>` : `3-dart average <b>${avg}</b>`);
+    if (level + 1 < RIVALS.length) again = `Next: ${RIVALS[level + 1].name}`;
+    else text += "<br><b>You are the champion!</b>";
   } else {
-    title = `${RIVALS[level].name} wins`;
-    text = `You needed <b>${score[0]}</b> more.<br>3-dart average <b>${avg}</b>`;
+    title = `${rivalName()} wins`;
+    text = isX01() ? `You needed <b>${score[0]}</b> more.<br>3-dart average <b>${avg}</b>` : `<b>${score[0]}</b> to <b>${score[1]}</b>`;
   }
+  void vs;
   persist();
   $("oTitle").textContent = title;
   $("oText").innerHTML = text;
   $("oAgain").textContent = again;
   $("over").classList.remove("hide");
+  lastWon = playerWon;
 }
+let lastWon = false;
 
 $("oAgain").addEventListener("click", () => {
   sfx.unlock();
-  if (mode === "duel" && score[0] === 0 && level + 1 < RIVALS.length) startGame("duel", level + 1);
-  else startGame(mode, level);
+  if (GAMES[game].vs && lastWon && level + 1 < RIVALS.length) startGame(game, level + 1);
+  else startGame(game, level);
 });
 $("oMenu").addEventListener("click", showMenu);
-$("attackBtn").addEventListener("click", () => {
-  sfx.unlock();
-  startGame("attack");
-});
+$("attackBtn").addEventListener("click", () => { sfx.unlock(); startGame("attack"); });
+$("nineBtn").addEventListener("click", () => { sfx.unlock(); startGame("nine"); });
 
 function showMenu() {
   state = "menu";
@@ -547,21 +671,31 @@ function showMenu() {
   $("over").classList.add("hide");
   $("hud").classList.add("hide");
   $("turn").classList.add("hide");
+  $("cric").classList.add("hide");
   $("best").textContent = String(best);
+  $("bestNine").textContent = String(bestNine);
+  const chips = $("games");
+  chips.innerHTML = "";
+  (Object.keys(GAMES) as GameId[]).filter((g) => GAMES[g].vs).forEach((g) => {
+    const b = document.createElement("button");
+    b.className = "chip" + (g === picked ? " on" : "");
+    b.textContent = GAMES[g].name;
+    b.addEventListener("click", () => { picked = g; showMenu(); });
+    chips.appendChild(b);
+  });
+  $("rules").textContent = GAMES[picked].rules;
+  const done = beaten[picked] ?? 0;
   const box = $("ladder");
   box.innerHTML = "";
   RIVALS.forEach((r, i) => {
     const b = document.createElement("button");
-    const locked = i > beaten;
-    b.className = "opp" + (locked ? " locked" : i === beaten ? " next" : "");
+    const locked = i > done;
+    b.className = "opp" + (locked ? " locked" : i === done ? " next" : "");
     b.innerHTML = `<span class="av" style="background:${r.col}">${r.name.split(" ").map((w) => w[0]).join("")}</span>` +
       `<span class="nm"><b>${r.name}</b><span>${locked ? "Beat the rival above to unlock" : r.tag}</span></span>` +
-      `<span class="st">${i < beaten ? "★" : locked ? "🔒" : "▶"}</span>`;
+      `<span class="st">${i < done ? "★" : locked ? "🔒" : "▶"}</span>`;
     b.disabled = locked;
-    b.addEventListener("click", () => {
-      sfx.unlock();
-      startGame("duel", i);
-    });
+    b.addEventListener("click", () => { sfx.unlock(); startGame(picked, i); });
     box.appendChild(b);
   });
   $("menu").classList.remove("hide");
@@ -571,15 +705,37 @@ function showMenu() {
 // HUD
 // ------------------------------------------------------------------
 function drawHud() {
-  if (mode === "duel") {
+  const vs = GAMES[game].vs;
+  $("c1").classList.remove("hide");
+  if (vs) {
     $("n0").textContent = "You";
-    $("n1").textContent = RIVALS[level].name;
+    $("n1").textContent = rivalName();
     $("s0").textContent = String(score[0]);
     $("s1").textContent = String(score[1]);
-    $("x0").textContent = playerDarts ? `Avg ${((playerPoints / playerDarts) * 3).toFixed(1)}` : "First to zero";
-    $("x1").textContent = `Rival ${level + 1} of ${RIVALS.length}`;
     $("c0").classList.toggle("on", whose === 0);
     $("c1").classList.toggle("on", whose === 1);
+  }
+  const sub = (w: 0 | 1) => {
+    if (isX01()) {
+      const r = checkout(score[w], 3);
+      return r ? r.map((b) => b.label).join(" ") : w === 0 && playerDarts ? `Avg ${((playerPoints / playerDarts) * 3).toFixed(1)}` : GAMES[game].name;
+    }
+    if (game === "cricket") return `Points · round ${Math.min(round, CRICKET_ROUNDS)}/${CRICKET_ROUNDS}`;
+    if (game === "english") return w === batting ? `Batting · ${wickets}/10 wkts` : `Bowling · over ${Math.min(overs + 1, OVERS)}/${OVERS}`;
+    return "";
+  };
+  if (vs) {
+    $("x0").textContent = sub(0);
+    $("x1").textContent = sub(1);
+  } else if (game === "nine") {
+    $("n0").textContent = "Left";
+    $("s0").textContent = String(score[0]);
+    $("x0").textContent = sub(0);
+    $("n1").textContent = "Darts";
+    $("s1").textContent = `${playerDarts}/${NINE_DARTS}`;
+    $("x1").textContent = `Best ${bestNine} of 501`;
+    $("c0").classList.add("on");
+    $("c1").classList.remove("on");
   } else {
     $("n0").textContent = "Score";
     $("n1").textContent = "Best";
@@ -595,7 +751,15 @@ function drawHud() {
     el.textContent = h ? h.label : "–";
     el.className = "slot" + (h ? " hit" + (h.mult === 3 ? " t" : h.mult === 2 && h.num !== 25 ? " d" : h.num === 25 ? " b" : "") : i === darts.length ? " next" : "");
   }
-  $("dt").textContent = String(darts.reduce((a, h) => a + h.score, 0));
+  let tot = String(darts.reduce((a, h) => a + h.score, 0));
+  if (game === "cricket") tot = `${darts.reduce((a, h) => a + (cricketIdx(h) >= 0 ? h.mult : 0), 0)} mk`;
+  if (game === "english" && whose !== batting) tot = `${wickets} wk`;
+  $("dt").textContent = tot;
+  if (game === "cricket") {
+    const rows = [0, 1].map((w) => `<tr><th>${w === 0 ? "You" : rivalName().split(" ").pop()}</th>` +
+      marks[w].map((m) => `<td class="${m >= 3 ? "c" : ""}">${markSym(m)}</td>`).join("") + "</tr>");
+    $("cric").innerHTML = `<table><tr><th></th>${CRICKET_NUMS.map((n) => `<th>${n === 25 ? "B" : n}</th>`).join("")}</tr>${rows.join("")}</table>`;
+  }
 }
 
 const hintEl = $("hint");
@@ -638,15 +802,16 @@ async function load() {
     if (s) {
       const d = JSON.parse(s);
       best = d.best | 0;
-      beaten = clamp(d.beaten | 0, 0, RIVALS.length);
+      bestNine = d.bestNine | 0;
       wins = d.wins | 0;
+      beaten = typeof d.beaten === "object" && d.beaten ? d.beaten : { x301: clamp(d.beaten | 0, 0, RIVALS.length) };
     }
   } catch {
     /* fresh start */
   }
 }
 function persist() {
-  P.save(GAME_ID, JSON.stringify({ best, beaten, wins }));
+  P.save(GAME_ID, JSON.stringify({ best, bestNine, beaten, wins }));
 }
 
 // ------------------------------------------------------------------
@@ -669,7 +834,6 @@ function update(dt: number) {
   }
   // Gentle lamp flicker for life
   lamp.intensity = 6 + Math.sin(clock * 7.3) * 0.08;
-  void cpuAim;
 }
 
 function frame(now: number) {
@@ -710,7 +874,7 @@ if (location.search.includes("debug")) {
     throwAt: (x: number, y: number) => { if (state === "aim") playerThrow(x, y); },
     step: (secs: number) => { for (let t = 0; t < secs; t += 0.05) update(0.05); },
     setScore: (a: number, b: number) => { score[0] = a; score[1] = b; turnStart = score[whose]; drawHud(); },
-    state: () => ({ state, mode, level, whose, score: [...score], darts: darts.map((d) => d.label), round, best, beaten }),
+    state: () => ({ state, game, level, whose, score: [...score], darts: darts.map((d) => d.label), round, best, bestNine, beaten, marks, batting, innings, wickets, overs }),
   };
 }
 

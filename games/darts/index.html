@@ -41,7 +41,18 @@
         #hint { left: 12px; transform: none; bottom: max(14px, env(safe-area-inset-bottom)); font-size: 14px; white-space: normal; max-width: 24vw; }
         #turn { left: auto; right: 12px; transform: none; flex-wrap: wrap; justify-content: flex-end; width: min(140px, 24vw); }
         .slot { min-width: 0; flex: 1 1 40%; }
+        #cric { left: 12px; transform: none; top: calc(max(10px, env(safe-area-inset-top)) + 88px); }
       }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 10px 0 8px; }
+      .chip { height: 38px; padding: 0 14px; font-size: 15px; background: #3a2b20; color: #e9d8bd; box-shadow: inset 0 -3px 0 rgba(0,0,0,.28); }
+      .chip.on { background: #f5c542; color: #2a1d10; }
+      #cric { position: fixed; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 84px); transform: translateX(-50%);
+        background: rgba(20,14,10,.82); border-radius: 12px; padding: 4px 8px; pointer-events: none; z-index: 2; }
+      #cric table { border-collapse: collapse; font-weight: 900; font-size: 14px; }
+      #cric th { color: #c9b79c; font-size: 12px; padding: 1px 6px; }
+      #cric th:first-child { text-align: left; max-width: 60px; overflow: hidden; }
+      #cric td { width: 26px; text-align: center; color: #fff; padding: 1px 0; }
+      #cric td.c { color: #81c784; }
       #pop { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(.6); font-weight: 900; font-size: 46px;
         color: #fff; text-shadow: 0 4px 0 rgba(0,0,0,.45), 0 0 24px rgba(0,0,0,.4); opacity: 0; pointer-events: none; z-index: 3;
         text-align: center; white-space: nowrap; }
@@ -84,6 +95,7 @@
       <div class="card" id="c0"><div class="who" id="n0">You</div><div class="big" id="s0">301</div><div class="sub" id="x0"></div></div>
       <div class="card" id="c1"><div class="who" id="n1">CPU</div><div class="big" id="s1">301</div><div class="sub" id="x1"></div></div>
     </div>
+    <div id="cric" class="hide"></div>
     <div id="turn" class="hide"><div class="slot" id="d0">–</div><div class="slot" id="d1">–</div><div class="slot" id="d2">–</div><div class="slot tot" id="dt">0</div></div>
     <div id="hint" class="off">Drag to aim · Let go to throw</div>
     <div id="pop"></div>
@@ -92,10 +104,12 @@
     <div class="screen" id="menu">
       <div class="box">
         <h1>DARTS DUEL</h1>
-        <div class="tag">Beat six rivals at 301. Hit exactly zero to win.</div>
+        <div class="chips" id="games"></div>
+        <div class="tag" id="rules"></div>
         <div class="lbl">Rivals</div>
         <div id="ladder"></div>
         <div class="lbl">Solo</div>
+        <button class="alt" id="nineBtn">Nine-Dart Finish · Best <span id="bestNine">0</span>/501</button>
         <button class="alt" id="attackBtn">Score Attack · Best <span id="best">0</span></button>
       </div>
     </div>
