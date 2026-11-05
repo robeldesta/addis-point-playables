@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
 // Low-poly models built from primitives, so there are no model files to download.
 
@@ -6,7 +7,7 @@ const matCache = new Map<number, THREE.MeshLambertMaterial>();
 export const mat = (color: number) => {
   let m = matCache.get(color);
   if (!m) {
-    m = new THREE.MeshLambertMaterial({ color, flatShading: true });
+    m = new THREE.MeshLambertMaterial({ color });
     matCache.set(color, m);
   }
   return m;
@@ -20,10 +21,15 @@ export function mesh(geo: THREE.BufferGeometry, color: number, x = 0, y = 0, z =
   return m;
 }
 
-const box = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d);
-const cyl = (rt: number, rb: number, h: number, seg = 8) => new THREE.CylinderGeometry(rt, rb, h, seg);
-const cone = (r: number, h: number, seg = 6) => new THREE.ConeGeometry(r, h, seg);
-const sphere = (r: number, seg = 8) => new THREE.SphereGeometry(r, seg, Math.max(4, seg - 2));
+// Soft look: every box has rounded edges, round shapes get extra segments and smooth shading.
+export const box = (w: number, h: number, d: number) => {
+  const r = Math.min(w, h, d) * 0.3;
+  if (r < 0.012) return new THREE.BoxGeometry(w, h, d);
+  return new RoundedBoxGeometry(w, h, d, 2, r);
+};
+const cyl = (rt: number, rb: number, h: number, seg = 8) => new THREE.CylinderGeometry(rt, rb, h, Math.max(seg, 16));
+const cone = (r: number, h: number, seg = 6) => new THREE.ConeGeometry(r, h, seg <= 4 ? seg : Math.max(seg, 14));
+const sphere = (r: number, seg = 8) => new THREE.SphereGeometry(r, Math.max(seg, 14), Math.max(seg, 14) - 3);
 
 export const COLORS = {
   grass: 0x7cc35a,
@@ -106,11 +112,11 @@ export function farmer(): { root: THREE.Group; body: THREE.Group; legL: THREE.Ob
   body.add(legL, legR);
   body.add(mesh(box(0.62, 0.62, 0.38), 0x4a90d9, 0, 0.8, 0)); // overalls
   body.add(mesh(box(0.64, 0.3, 0.4), 0xe05b4b, 0, 1.0, 0)); // shirt
-  body.add(mesh(sphere(0.3, 8), COLORS.skin, 0, 1.42, 0)); // head
-  body.add(mesh(cyl(0.55, 0.55, 0.06, 10), 0xe8c26a, 0, 1.62, 0)); // hat brim
-  body.add(mesh(cyl(0.28, 0.32, 0.26, 8), 0xe8c26a, 0, 1.76, 0)); // hat top
-  body.add(mesh(box(0.08, 0.08, 0.04), 0x222222, -0.1, 1.46, 0.28, false));
-  body.add(mesh(box(0.08, 0.08, 0.04), 0x222222, 0.1, 1.46, 0.28, false));
+  body.add(mesh(sphere(0.42, 8), COLORS.skin, 0, 1.52, 0)); // big chibi head
+  body.add(mesh(cyl(0.62, 0.62, 0.06, 10), 0xe8c26a, 0, 1.82, 0)); // hat brim
+  body.add(mesh(cyl(0.33, 0.38, 0.28, 8), 0xe8c26a, 0, 1.98, 0)); // hat top
+  body.add(mesh(cyl(0.385, 0.385, 0.08, 8), 0xe05b4b, 0, 1.88, 0, false)); // hat band
+  addFace(body, 1.52, 0.42);
   const back = new THREE.Group();
   back.position.set(0, 0.62, -0.42);
   body.add(back);
@@ -124,9 +130,10 @@ export function person(shirt: number): THREE.Group {
   g.add(mesh(box(0.2, 0.5, 0.22), 0x3d3d4a, 0.13, 0.25, 0));
   g.add(mesh(box(0.56, 0.6, 0.34), shirt, 0, 0.8, 0));
   const skins = [0x8d5524, 0xc68642, 0xe0ac69, 0xf1c27d, 0x6b4423];
-  g.add(mesh(sphere(0.27, 8), skins[Math.floor(Math.random() * skins.length)], 0, 1.3, 0));
+  g.add(mesh(sphere(0.38, 8), skins[Math.floor(Math.random() * skins.length)], 0, 1.4, 0));
+  addFace(g, 1.4, 0.38);
   const hair = [0x2b1b10, 0x111111, 0x7a4b25, 0xd8b56a];
-  const h = mesh(sphere(0.28, 8), hair[Math.floor(Math.random() * hair.length)], 0, 1.4, -0.04);
+  const h = mesh(sphere(0.4, 8), hair[Math.floor(Math.random() * hair.length)], 0, 1.53, -0.05);
   h.scale.set(1, 0.6, 1);
   g.add(h);
   addArms(g, shirt, 1.05, 0.36);
@@ -295,11 +302,36 @@ export function dam(): { root: THREE.Group; turbines: THREE.Object3D[] } {
 
 export function tree(): THREE.Group {
   const g = new THREE.Group();
-  g.add(mesh(cyl(0.15, 0.22, 1.0, 6), COLORS.woodDark, 0, 0.5, 0));
+  g.add(mesh(cyl(0.16, 0.24, 1.1, 6), COLORS.woodDark, 0, 0.55, 0));
   const s = 0.8 + Math.random() * 0.5;
-  g.add(mesh(cone(0.9 * s, 1.6 * s, 7), 0x3f9a4a, 0, 1.4 * s + 0.4, 0));
-  g.add(mesh(cone(0.7 * s, 1.2 * s, 7), 0x4fb35a, 0, 2.1 * s + 0.4, 0));
+  const greens = [0x5dbb5a, 0x6cc866, 0x52ad55];
+  const c = greens[Math.floor(Math.random() * greens.length)];
+  // a puffy cluster of balls instead of a pointy cone
+  g.add(mesh(sphere(0.85 * s), c, 0, 1.55 * s + 0.4, 0));
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * Math.PI * 2 + Math.random();
+    g.add(mesh(sphere((0.5 + Math.random() * 0.15) * s), k % 2 ? c : 0x7ad46f, Math.cos(a) * 0.62 * s, (1.3 + Math.random() * 0.4) * s + 0.4, Math.sin(a) * 0.62 * s));
+  }
+  g.add(mesh(sphere(0.55 * s), 0x7ad46f, 0.1 * s, 2.25 * s + 0.4, 0.05));
   return g;
+}
+
+/** Big friendly eyes with a shine, rosy cheeks and a little smile, on a head at height y with radius r. */
+export function addFace(parent: THREE.Object3D, y: number, r: number) {
+  const z = r * 0.9;
+  for (const sx of [-1, 1]) {
+    const eye = mesh(sphere(r * 0.17), 0x2a1e1a, sx * r * 0.36, y + r * 0.05, z, false);
+    eye.scale.set(0.85, 1.15, 0.5);
+    parent.add(eye);
+    parent.add(mesh(sphere(r * 0.06), 0xffffff, sx * r * 0.36 + r * 0.05, y + r * 0.13, z + r * 0.07, false));
+    const cheek = mesh(sphere(r * 0.13), 0xff9a9a, sx * r * 0.58, y - r * 0.22, r * 0.78, false);
+    cheek.scale.set(1, 0.6, 0.4);
+    parent.add(cheek);
+  }
+  const smile = new THREE.Mesh(new THREE.TorusGeometry(r * 0.16, r * 0.035, 6, 14, Math.PI), mat(0x7a3a2a));
+  smile.rotation.z = Math.PI;
+  smile.position.set(0, y - r * 0.18, z + r * 0.04);
+  parent.add(smile);
 }
 
 export function fence(len: number): THREE.Group {
@@ -417,6 +449,7 @@ export function chicken(): THREE.Group {
   head.add(mesh(sphere(0.12, 6), 0xffffff, 0, 0.06, 0.04));
   head.add(mesh(cone(0.04, 0.1, 4), 0xffa000, 0, 0.05, 0.18, false).rotateX(Math.PI / 2));
   head.add(mesh(box(0.04, 0.1, 0.1), 0xe53935, 0, 0.2, 0.04, false));
+  for (const sx of [-1, 1]) head.add(mesh(sphere(0.03), 0x222222, sx * 0.08, 0.1, 0.12, false));
   g.add(head);
   g.add(mesh(box(0.03, 0.18, 0.03), 0xffa000, -0.08, 0.09, 0, false));
   g.add(mesh(box(0.03, 0.18, 0.03), 0xffa000, 0.08, 0.09, 0, false));
@@ -436,6 +469,10 @@ export function cow(): THREE.Group {
   head.add(mesh(box(0.42, 0.24, 0.2), 0xf3a6b5, 0, -0.12, 0.42));
   head.add(mesh(box(0.08, 0.2, 0.08), 0xe8dcc0, -0.2, 0.32, 0));
   head.add(mesh(box(0.08, 0.2, 0.08), 0xe8dcc0, 0.2, 0.32, 0));
+  for (const sx of [-1, 1]) {
+    head.add(mesh(sphere(0.07), 0x2a1e1a, sx * 0.14, 0.08, 0.36, false));
+    head.add(mesh(sphere(0.025), 0xffffff, sx * 0.14 + 0.02, 0.11, 0.42, false));
+  }
   g.add(head);
   g.scale.setScalar(0.9);
   return g;
@@ -443,10 +480,10 @@ export function cow(): THREE.Group {
 
 export function cloud(): THREE.Group {
   const g = new THREE.Group();
-  const m = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+  const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
   const n = 4 + Math.floor(Math.random() * 3);
   for (let i = 0; i < n; i++) {
-    const s = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9 + Math.random() * 0.8, 0), m);
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.9 + Math.random() * 0.8, 14, 10), m);
     s.position.set(i * 1.1 - n * 0.5, Math.random() * 0.5, Math.random() * 0.8);
     s.castShadow = true;
     g.add(s);
@@ -478,9 +515,9 @@ export function addArms(body: THREE.Object3D, color: number, y: number, x: numbe
     const pivot = new THREE.Group();
     pivot.name = "arm";
     pivot.position.set(side * x, y, 0);
-    const arm = mesh(box(0.16, 0.5, 0.18), color, 0, -0.22, 0);
+    const arm = mesh(box(0.2, 0.5, 0.22), color, 0, -0.22, 0);
     pivot.add(arm);
-    pivot.add(mesh(sphere(0.1, 6), COLORS.skin, 0, -0.5, 0));
+    pivot.add(mesh(sphere(0.13, 6), COLORS.skin, 0, -0.5, 0));
     body.add(pivot);
     return pivot;
   };

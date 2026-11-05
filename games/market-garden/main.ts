@@ -842,7 +842,7 @@ function addVehicle(obj: THREE.Group, home: THREE.Vector3, cap: number, speed: n
 }
 function garage(x: number, z: number) {
   const g = new THREE.Group();
-  const B = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d);
+  const B = M.box;
   g.add(M.mesh(B(2.4, 0.06, 2.8), 0x8c8c8c, 0, 0.03, 0, false));
   for (const [px, pz] of [[-1.1, -1.3], [1.1, -1.3], [-1.1, 1.3], [1.1, 1.3]]) g.add(M.mesh(B(0.15, 2.4, 0.15), M.COLORS.woodDark, px, 1.2, pz));
   g.add(M.mesh(B(2.7, 0.15, 3.1), M.COLORS.roofRed, 0, 2.45, 0));
@@ -891,8 +891,8 @@ function spawnHelper(def: HelperDef, animate: boolean) {
   if (helpers.some((h) => h.def === def)) return;
   const obj = M.person(def.shirt);
   // straw hat so helpers stand out from shoppers
-  obj.add(M.mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.05, 10), 0xe8c66a, 0, 1.55, 0, false));
-  obj.add(M.mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.2, 8), 0xe8c66a, 0, 1.66, 0, false));
+  obj.add(M.mesh(new THREE.CylinderGeometry(0.58, 0.58, 0.05, 16), 0xe8c66a, 0, 1.72, 0, false));
+  obj.add(M.mesh(new THREE.CylinderGeometry(0.3, 0.36, 0.24, 16), 0xe8c66a, 0, 1.85, 0, false));
   const back = new THREE.Group();
   back.position.set(0, 0.95, -0.34);
   obj.add(back);
@@ -1300,7 +1300,7 @@ function updateCounter(c: Counter, dt: number) {
     obj.position.set(spawnX(c), 0, ROAD_Z);
     scene.add(obj);
     const bubble = new Bubble();
-    bubble.sprite.position.set(0, 2.6, 0);
+    bubble.sprite.position.set(0, 2.8, 0);
     obj.add(bubble.sprite);
     const hg = new THREE.Group();
     hg.position.set(0, 0.9, 0.38);
