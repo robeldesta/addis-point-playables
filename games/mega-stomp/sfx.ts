@@ -70,4 +70,10 @@ export class Sfx {
   warn() { this.tone(880, 0.07, "square", 0.04); }
   over() { [392, 330, 262, 196].forEach((f, i) => this.tone(f, 0.3, "triangle", 0.12, 0, i * 0.15)); }
   click() { this.tone(900, 0.04, "square", 0.04); }
+  jump() { this.tone(260, 0.22, "square", 0.07, 2.4); }
+  land(big: number) { this.tone(90, 0.25, "sine", 0.35, 0.4); this.burst(180, 0.7, 0.25 + big * 0.2, 0.5, "lowpass"); }
+  egg(n: number) { this.tone(988 + Math.min(n, 8) * 60, 0.09, "square", 0.05); this.tone(1318 + Math.min(n, 8) * 80, 0.12, "triangle", 0.06, 0, 0.05); }
+  whistle() { this.tone(1500, 1.2, "sine", 0.05, 0.35); }
+  boom() { this.burst(120, 0.6, 0.7, 0.8, "lowpass"); this.tone(60, 0.5, "sine", 0.35, 0.5); }
+  turn() { this.burst(900, 0.8, 0.4, 0.2); }
 }

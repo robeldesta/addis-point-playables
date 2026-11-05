@@ -7,12 +7,23 @@
     <!-- Official YouTube Playables SDK. Must load before the game. -->
     <script src="https://www.youtube.com/game_api/v1"></script>
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #2b1d3d; touch-action: none;
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #5bb8ff; touch-action: none;
         user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; font-family: Arial, Helvetica, sans-serif; }
       #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-      .hud { position: fixed; z-index: 2; pointer-events: none; color: #fff; font-weight: 900; text-shadow: 0 2px 0 rgba(0,0,0,.45); }
+      .hud { position: fixed; z-index: 2; pointer-events: none; color: #fff; font-weight: 900; text-shadow: 0 2px 0 rgba(0,0,0,.55), 0 0 6px rgba(0,30,70,.7); }
       #score { top: max(10px, env(safe-area-inset-top)); left: 14px; font-size: 26px; }
       #score small { display: block; font-size: 12px; opacity: .85; }
+      #eggs { top: calc(max(10px, env(safe-area-inset-top)) + 50px); left: 14px; font-size: 18px; color: #ffe066; }
+      #street { top: calc(max(10px, env(safe-area-inset-top)) + 76px); left: 14px; font-size: 12px; padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.35); display: none; }
+      #street.show { display: block; }
+      #turn { top: 30%; left: 0; right: 0; text-align: center; font-size: 26px; color: #fff; -webkit-text-stroke: 1.5px #0d3b66; opacity: 0; transition: opacity .2s; }
+      #turn.show { opacity: 1; animation: throb .6s ease-in-out infinite; }
+      #behind { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 110px); left: 0; right: 0; text-align: center; font-size: 22px; color: #fff;
+        opacity: 0; }
+      #behind span { background: #e53935; padding: 6px 14px; border-radius: 12px; box-shadow: 0 4px 0 rgba(0,0,0,.3); }
+      #behind.show { opacity: 1; animation: blink .35s steps(2) infinite; }
+      #edge { position: fixed; inset: 0; pointer-events: none; z-index: 1; box-shadow: inset 0 -90px 70px -40px rgba(255,30,30,.85); opacity: 0; transition: opacity .15s; }
+      #edge.show { opacity: 1; }
       #sizebox { top: max(10px, env(safe-area-inset-top)); right: 14px; width: min(46vw, 220px); text-align: right; }
       #stage { font-size: 15px; letter-spacing: 1px; color: #ffe066; }
       #mass { font-size: 30px; line-height: 1; }
@@ -40,9 +51,9 @@
       @keyframes pop { 0% { opacity: 0; transform: scale(.4); } 15% { opacity: 1; transform: scale(1.15); }
         25% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-20px); } }
       .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 5;
-        background: rgba(25,10,40,.55); color: #fff; text-align: center; padding: 16px; box-sizing: border-box; }
+        background: rgba(10,40,80,.45); color: #fff; text-align: center; padding: 16px; box-sizing: border-box; }
       .screen.show { display: flex; }
-      .title { font-size: min(17vw, 92px); font-weight: 900; color: #9cff57; -webkit-text-stroke: 4px #1f3d00; line-height: .9;
+      .title { font-size: min(17vw, 92px); font-weight: 900; color: #3ec5ff; -webkit-text-stroke: 4px #0b3556; line-height: .9;
         text-shadow: 0 8px 0 rgba(0,0,0,.4); transform: rotate(-4deg); }
       .title b { color: #ff7b1c; -webkit-text-stroke: 4px #4a1600; }
       .tips { margin-top: 22px; font-weight: 800; font-size: 16px; line-height: 1.6; background: rgba(0,0,0,.35); padding: 10px 16px; border-radius: 14px; max-width: 330px; }
@@ -67,16 +78,22 @@
       <div class="bar" id="bar"><i id="barfill"></i></div>
       <div id="hungry">HUNGRY! EAT ZOMBIES</div>
     </div>
+    <div class="hud" id="eggs">🥚 0</div>
+    <div class="hud" id="street"></div>
+    <div class="hud" id="turn">◀ STEER TO TURN ▶</div>
+    <div id="edge"></div>
+    <div class="hud" id="behind"><span>⚠ TANK BEHIND! DODGE!</span></div>
     <div id="combo"></div>
     <div id="big"></div>
     <button id="roar"><div class="fill" id="roarfill"></div><span>ROAR</span></button>
     <div class="screen show" id="start">
       <div class="title">MEGA<br><b>STOMP</b></div>
       <div class="tips">
-        Drag to steer your dino<br>
+        Drag to steer · Tap to jump and ground-pound<br>
         <span class="g">Green ring</span> = small enough to smash<br>
         <span class="r">Red ring</span> = too big, dodge it!<br>
-        Eat zombies to grow. Stop eating and you shrink.
+        Eat zombies to grow. Stop eating and you shrink.<br>
+        Grab <span style="color:#ffe066">golden eggs</span> · watch out for tank shells!
       </div>
       <div class="go">Tap to stomp</div>
     </div>
