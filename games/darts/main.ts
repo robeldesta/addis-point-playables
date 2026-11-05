@@ -26,6 +26,20 @@ const RIVALS = [
   { name: "The Champ", sigma: 0.0095, col: "#f5c542", tag: "Undefeated. So far." },
 ];
 
+// How hard the hand is to control. Rivals scale with it too.
+type Diff = "easy" | "normal" | "hard" | "expert";
+const DIFFS: Record<Diff, {
+  name: string; best: number; worst: number; settle: number; tiredAt: number; scatter: number;
+  tremor: number; drift: number; pressure: number; rival: number; note: string;
+}> = {
+  easy:   { name: "Easy",   best: 0.006, worst: 0.016, settle: 1.7, tiredAt: 3.0, scatter: 0.0035, tremor: 0,      drift: 0,     pressure: 1,    rival: 1.3,  note: "Steady hand, gentle rivals" },
+  normal: { name: "Normal", best: 0.009, worst: 0.019, settle: 1.2, tiredAt: 2.2, scatter: 0.005,  tremor: 0.0015, drift: 0.006, pressure: 1.15, rival: 1,    note: "Your hand wanders. Keep correcting" },
+  hard:   { name: "Hard",   best: 0.012, worst: 0.023, settle: 0.9, tiredAt: 1.6, scatter: 0.0065, tremor: 0.0025, drift: 0.011, pressure: 1.35, rival: 0.8,  note: "Shaky under pressure. Sharp rivals" },
+  expert: { name: "Expert", best: 0.015, worst: 0.027, settle: 0.7, tiredAt: 1.2, scatter: 0.008,  tremor: 0.0035, drift: 0.016, pressure: 1.55, rival: 0.65, note: "Pro nerves. Pro rivals. Good luck" },
+};
+let diff: Diff = "normal";
+const D = () => DIFFS[diff];
+
 // ------------------------------------------------------------------
 // Renderer, scene
 // ------------------------------------------------------------------
@@ -274,15 +288,15 @@ scene.add(ret);
 
 const aim = { x: 0, y: 0.103 }; // where the player is pointing (starts on treble 20)
 let aiming = false, steady = 0, holdT = 0, fingerSpeed = 0, swayAmp = 0.016;
-let lastPx = 0, lastPy = 0, swayT = 0, lastMoveT = 0;
+let lastPx = 0, lastPy = 0, swayT = 0, lastMoveT = 0, driftA = 0;
 const phase = [0, 0, 0, 0].map(() => Math.random() * 10);
 const hist: { t: number; x: number; y: number }[] = [];
 const shown = { x: 0, y: 0 };
 
 function sway(t: number) {
   return {
-    x: swayAmp * (0.65 * Math.sin(1.25 * t + phase[0]) + 0.35 * Math.sin(2.9 * t + phase[1])),
-    y: swayAmp * (0.65 * Math.cos(1.6 * t + phase[2]) + 0.35 * Math.sin(3.4 * t + phase[3])),
+    x: swayAmp * (0.65 * Math.sin(1.25 * t + phase[0]) + 0.35 * Math.sin(2.9 * t + phase[1])) + D().tremor * Math.sin(11.3 * t + phase[2]),
+    y: swayAmp * (0.65 * Math.cos(1.6 * t + phase[2]) + 0.35 * Math.sin(3.4 * t + phase[3])) + D().tremor * Math.cos(13.1 * t + phase[0]),
   };
 }
 
@@ -290,12 +304,21 @@ function updateAim(dt: number) {
   swayT += dt;
   if (aiming) {
     holdT += dt;
-    if (fingerSpeed < 80) steady = Math.min(1, steady + dt * 1.7);
+    if (fingerSpeed < 80) steady = Math.min(1, steady + dt * D().settle);
     else steady = Math.max(0, steady - dt * fingerSpeed / 500);
     fingerSpeed *= Math.exp(-dt * 12);
   } else steady = Math.max(0, steady - dt * 2);
-  const tired = clamp((holdT - 3) / 2.5, 0, 1);
-  const goal = aiming ? 0.0165 - 0.0105 * steady + 0.016 * tired : 0.016;
+  const d = D();
+  const tired = clamp((holdT - d.tiredAt) / 2.5, 0, 1);
+  // Nerves: the hand shakes more when a finish is on.
+  const nerves = state === "aim" && isX01() && checkout(score[0], 3 - darts.length) ? d.pressure : 1;
+  const goal = aiming ? (d.worst - (d.worst - d.best) * steady) * nerves + 0.016 * tired : d.worst;
+  // The hand slowly drifts off target; the player has to keep correcting it.
+  if (aiming && d.drift) {
+    driftA += (Math.random() - 0.5) * dt * 3;
+    aim.x = clamp(aim.x + Math.cos(driftA) * d.drift * dt, -0.28, 0.28);
+    aim.y = clamp(aim.y + Math.sin(driftA) * d.drift * dt, -0.28, 0.28);
+  }
   swayAmp += (goal - swayAmp) * Math.min(1, dt * 8);
   const w = sway(swayT);
   shown.x = aim.x + w.x;
@@ -324,6 +347,7 @@ canvas.addEventListener("pointerdown", (e) => {
   aiming = true;
   holdT = 0;
   steady = 0.25;
+  driftA = Math.random() * Math.PI * 2;
   fingerSpeed = 0;
   lastPx = e.clientX;
   lastPy = e.clientY;
@@ -351,7 +375,7 @@ canvas.addEventListener("pointerup", () => {
   // Use where the sway was a moment ago, so lifting the finger doesn't nudge the dart.
   const now = performance.now();
   const s = hist.find((h) => now - h.t <= 70) ?? hist[hist.length - 1] ?? shown;
-  playerThrow(s.x + gauss() * 0.0035, s.y + gauss() * 0.0035);
+  playerThrow(s.x + gauss() * D().scatter, s.y + gauss() * D().scatter);
 });
 canvas.addEventListener("pointercancel", () => (aiming = false));
 
@@ -369,7 +393,11 @@ let turnStart = 0;
 let darts: Hit[] = [];
 let round = 1;
 let playerDarts = 0, playerPoints = 0;
-let best = 0, bestNine = 0, wins = 0;
+let wins = 0;
+// Records and ladder progress are kept per difficulty: "attack@hard", "x501@expert".
+let records: Record<string, number> = {};
+const key = (g: string) => g + "@" + diff;
+const record = (g: string) => records[key(g)] ?? 0;
 let beaten: Record<string, number> = {};
 // cricket
 const marks = [[0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0]];
@@ -466,7 +494,7 @@ function cpuTarget(): { x: number; y: number } {
 function cpuThrow() {
   if (state !== "cpu") return;
   const t = cpuTarget();
-  const s = RIVALS[level].sigma;
+  const s = RIVALS[level].sigma * D().rival;
   later(0.15, () => {
     if (state !== "cpu") return;
     state = "fly";
@@ -619,22 +647,23 @@ function finish(playerWon: boolean) {
   const vs = GAMES[game].vs;
   if (game === "attack") {
     const s = score[0];
-    const rec = s > best;
-    if (rec) best = s;
+    const rec = s > record("attack");
+    if (rec) records[key("attack")] = s;
     title = rec ? "New best!" : "Finished";
-    text = `Score <b>${s}</b> · Best <b>${best}</b><br>3-dart average <b>${avg}</b>`;
-    P.sendScore(best);
+    text = `${D().name} · Score <b>${s}</b> · Best <b>${record("attack")}</b><br>3-dart average <b>${avg}</b>`;
+    P.sendScore(Math.max(0, ...Object.entries(records).filter(([k]) => k.startsWith("attack@")).map(([, v]) => v)));
   } else if (game === "nine") {
     const got = 501 - score[0];
-    const rec = got > bestNine;
-    if (rec) bestNine = got;
+    const rec = got > record("nine");
+    if (rec) records[key("nine")] = got;
+    const bestNine = record("nine");
     title = playerWon ? "Perfect leg!" : rec ? "New best!" : "Out of darts";
     text = playerWon ? `501 in <b>${playerDarts}</b> darts. Legendary.` : `You cleared <b>${got}</b> of 501 with 9 darts.<br>Best <b>${bestNine}</b>`;
   } else if (playerWon) {
     wins++;
-    const n = beaten[game] ?? 0;
+    const n = beaten[key(game)] ?? 0;
     const first = level === n;
-    if (first && n < RIVALS.length) beaten[game] = n + 1;
+    if (first && n < RIVALS.length) beaten[key(game)] = n + 1;
     title = "You win!";
     text = `You beat <b>${rivalName()}</b> at ${GAMES[game].name}.<br>` +
       (game === "english" ? `Runs <b>${score[0]}</b> to <b>${score[1]}</b>` : game === "cricket" ? `Points <b>${score[0]}</b> to <b>${score[1]}</b>` : `3-dart average <b>${avg}</b>`);
@@ -672,8 +701,18 @@ function showMenu() {
   $("hud").classList.add("hide");
   $("turn").classList.add("hide");
   $("cric").classList.add("hide");
-  $("best").textContent = String(best);
-  $("bestNine").textContent = String(bestNine);
+  $("best").textContent = String(record("attack"));
+  $("bestNine").textContent = String(record("nine"));
+  const dc = $("diffs");
+  dc.innerHTML = "";
+  (Object.keys(DIFFS) as Diff[]).forEach((k) => {
+    const b = document.createElement("button");
+    b.className = "chip" + (k === diff ? " on" : "");
+    b.textContent = DIFFS[k].name;
+    b.addEventListener("click", () => { diff = k; persist(); showMenu(); });
+    dc.appendChild(b);
+  });
+  $("dnote").textContent = D().note;
   const chips = $("games");
   chips.innerHTML = "";
   (Object.keys(GAMES) as GameId[]).filter((g) => GAMES[g].vs).forEach((g) => {
@@ -684,7 +723,7 @@ function showMenu() {
     chips.appendChild(b);
   });
   $("rules").textContent = GAMES[picked].rules;
-  const done = beaten[picked] ?? 0;
+  const done = beaten[key(picked)] ?? 0;
   const box = $("ladder");
   box.innerHTML = "";
   RIVALS.forEach((r, i) => {
@@ -733,14 +772,14 @@ function drawHud() {
     $("x0").textContent = sub(0);
     $("n1").textContent = "Darts";
     $("s1").textContent = `${playerDarts}/${NINE_DARTS}`;
-    $("x1").textContent = `Best ${bestNine} of 501`;
+    $("x1").textContent = `Best ${record("nine")} of 501`;
     $("c0").classList.add("on");
     $("c1").classList.remove("on");
   } else {
     $("n0").textContent = "Score";
     $("n1").textContent = "Best";
     $("s0").textContent = String(score[0]);
-    $("s1").textContent = String(Math.max(best, score[0]));
+    $("s1").textContent = String(Math.max(record("attack"), score[0]));
     $("x0").textContent = `Round ${Math.min(round, ROUNDS)} of ${ROUNDS}`;
     $("x1").textContent = "30 darts";
     $("c0").classList.add("on");
@@ -801,17 +840,22 @@ async function load() {
     const s = await P.loadSave(GAME_ID);
     if (s) {
       const d = JSON.parse(s);
-      best = d.best | 0;
-      bestNine = d.bestNine | 0;
       wins = d.wins | 0;
-      beaten = typeof d.beaten === "object" && d.beaten ? d.beaten : { x301: clamp(d.beaten | 0, 0, RIVALS.length) };
+      if (d.diff in DIFFS) diff = d.diff;
+      records = d.records && typeof d.records === "object" ? d.records : {};
+      // Older saves were made with the old, easier hand: file them under Easy.
+      if (d.best) records["attack@easy"] = Math.max(records["attack@easy"] ?? 0, d.best | 0);
+      if (d.bestNine) records["nine@easy"] = Math.max(records["nine@easy"] ?? 0, d.bestNine | 0);
+      const b = typeof d.beaten === "object" && d.beaten ? d.beaten : { x301: clamp(d.beaten | 0, 0, RIVALS.length) };
+      beaten = {};
+      for (const [k, v] of Object.entries(b)) beaten[k.includes("@") ? k : k + "@easy"] = Number(v) | 0;
     }
   } catch {
     /* fresh start */
   }
 }
 function persist() {
-  P.save(GAME_ID, JSON.stringify({ best, bestNine, beaten, wins }));
+  P.save(GAME_ID, JSON.stringify({ records, beaten, wins, diff }));
 }
 
 // ------------------------------------------------------------------
@@ -870,11 +914,12 @@ P.onAudioChange((on) => (sfx.enabled = on));
 if (location.search.includes("debug")) {
   (window as unknown as Record<string, unknown>).dd = {
     start: startGame,
+    setDiff: (k: Diff) => { diff = k; },
     menu: showMenu,
     throwAt: (x: number, y: number) => { if (state === "aim") playerThrow(x, y); },
     step: (secs: number) => { for (let t = 0; t < secs; t += 0.05) update(0.05); },
     setScore: (a: number, b: number) => { score[0] = a; score[1] = b; turnStart = score[whose]; drawHud(); },
-    state: () => ({ state, game, level, whose, score: [...score], darts: darts.map((d) => d.label), round, best, bestNine, beaten, marks, batting, innings, wickets, overs }),
+    state: () => ({ state, game, level, whose, score: [...score], darts: darts.map((d) => d.label), round, diff, records, beaten, marks, batting, innings, wickets, overs }),
   };
 }
 
