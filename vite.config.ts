@@ -17,6 +17,7 @@ export default defineConfig({
     rollupOptions: {
       input: Object.fromEntries([
         ["index", resolve("index.html")],
+        ["games-home", resolve("games/index.html")],
         ...games.map((g) => [g, resolve(`games/${g}/index.html`)]),
       ]),
     },
