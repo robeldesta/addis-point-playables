@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Addis Point Games</title>
+    <meta name="description" content="Free browser games from Addis Point: arcade runners, sports and business sims, built for YouTube Playables." />
+    <style>
+      :root { --bg: #14101f; --card: #211a33; --ink: #f6f1ff; --mute: #b3a8cc; --gold: #ffcf3f; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+        background-image: radial-gradient(900px 500px at 15% -10%, #4a2a7a 0%, transparent 60%), radial-gradient(800px 500px at 100% 0%, #7a2a4a 0%, transparent 55%); background-repeat: no-repeat; }
+      header { max-width: 1120px; margin: 0 auto; padding: 44px 16px 18px; }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .logo { width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #ffcf3f, #ff6b3d); display: grid; place-items: center;
+        font-weight: 900; font-size: 22px; color: #2a1200; box-shadow: 0 6px 20px rgba(255,120,60,.35); }
+      .brand span { font-weight: 800; letter-spacing: .5px; color: var(--mute); font-size: 14px; text-transform: uppercase; }
+      h1 { font-size: clamp(32px, 6vw, 56px); line-height: 1.05; margin: 18px 0 10px; letter-spacing: -1px; }
+      h1 em { font-style: normal; background: linear-gradient(90deg, #ffcf3f, #ff6b3d); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .lead { color: var(--mute); font-size: 17px; max-width: 560px; margin: 0; line-height: 1.5; }
+      main { max-width: 1120px; margin: 0 auto; padding: 16px 16px 40px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+      .game { display: flex; flex-direction: column; background: var(--card); border-radius: 20px; overflow: hidden; text-decoration: none; color: inherit;
+        border: 1px solid rgba(255,255,255,.07); transition: transform .18s ease, box-shadow .18s ease; }
+      .game:hover, .game:focus-visible { transform: translateY(-4px); box-shadow: 0 14px 34px rgba(0,0,0,.45); outline: none; }
+      .shot { position: relative; aspect-ratio: 4 / 5; overflow: hidden; background: #000; }
+      .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; transition: transform .3s ease; }
+      .game:hover .shot img { transform: scale(1.04); }
+      .badge { position: absolute; top: 10px; left: 10px; background: var(--gold); color: #2a1a00; font-weight: 900; font-size: 11px; letter-spacing: .6px;
+        padding: 4px 9px; border-radius: 999px; text-transform: uppercase; }
+      .body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+      .body h2 { margin: 0; font-size: 20px; }
+      .body p { margin: 0; color: var(--mute); font-size: 14px; line-height: 1.45; flex: 1; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+      .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+      .tag { font-size: 11px; font-weight: 700; color: #d9cff0; background: rgba(255,255,255,.08); padding: 4px 8px; border-radius: 999px; }
+      .play { flex: none; font-weight: 900; font-size: 14px; color: #1b1000; background: linear-gradient(135deg, #ffcf3f, #ff8a3d); padding: 8px 14px; border-radius: 999px; }
+      @media (max-width: 560px) {
+        main { grid-template-columns: 1fr 1fr; gap: 12px; }
+        .body { padding: 10px 12px 12px; gap: 6px; }
+        .body h2 { font-size: 16px; }
+        .body p { font-size: 12.5px; }
+        .tags { display: none; }
+        .play { width: 100%; text-align: center; }
+      }
+      footer { max-width: 1120px; margin: 0 auto; padding: 8px 16px 40px; color: #7f7499; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><div class="logo">AP</div><span>Addis Point Games</span></div>
+      <h1>Quick games, <em>big fun.</em></h1>
+      <p class="lead">Free games that load instantly and play on any phone or computer. Tap one and start playing, no install needed.</p>
+    </header>
+    <main>
+      <a class="game" href="./mega-stomp/">
+        <div class="shot"><img src="../thumbs/mega-stomp.jpg" alt="A green T-rex stomping through a zombie city street" loading="lazy" /><span class="badge">New</span></div>
+        <div class="body">
+          <h2>Mega Stomp</h2>
+          <p>Stomp zombie hordes to grow your dino from hatchling to kaiju. Smash cars, buses and tanks, and roar down the zombie T-rex.</p>
+          <div class="row"><div class="tags"><span class="tag">Runner</span><span class="tag">Action</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+      <a class="game" href="./market-garden/">
+        <div class="shot"><img src="../thumbs/market-garden.jpg" alt="A farmer walking between wheat fields and a market stall" loading="lazy" /><span class="badge">Favourite</span></div>
+        <div class="body">
+          <h2>Market Garden</h2>
+          <p>Plant wheat, bake bread, raise animals and sell at your stall. Hire helpers and grow your farm into a business.</p>
+          <div class="row"><div class="tags"><span class="tag">Farming</span><span class="tag">Idle</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+      <a class="game" href="./bowling/">
+        <div class="shot"><img src="../thumbs/bowling.jpg" alt="A bowling lane with pins at the end" loading="lazy" /></div>
+        <div class="body">
+          <h2>Strike Lane</h2>
+          <p>Slide to line up, flick to bowl, and curve your shot into the pocket. Ten frames to chase a perfect 300.</p>
+          <div class="row"><div class="tags"><span class="tag">Sports</span><span class="tag">3D</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+      <a class="game" href="./darts/">
+        <div class="shot"><img src="../thumbs/darts.jpg" alt="Darts Duel menu with game modes and rivals" loading="lazy" /></div>
+        <div class="body">
+          <h2>Darts Duel</h2>
+          <p>501, Cricket and more. Beat a ladder of six rivals, from easy to expert, with a steady hand.</p>
+          <div class="row"><div class="tags"><span class="tag">Sports</span><span class="tag">Duel</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+      <a class="game" href="./cut-shop/">
+        <div class="shot"><img src="../thumbs/cut-shop.jpg" alt="Cut Shop intro screen" loading="lazy" /></div>
+        <div class="body">
+          <h2>Cut Shop</h2>
+          <p>Run a laser-cutting shop. Set your prices, manage costs and outsmart three rival shops for a year.</p>
+          <div class="row"><div class="tags"><span class="tag">Business</span><span class="tag">Strategy</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+      <a class="game" href="./gridkeeper/">
+        <div class="shot"><img src="../thumbs/gridkeeper.jpg" alt="Lights On intro screen" loading="lazy" /></div>
+        <div class="body">
+          <h2>Lights On</h2>
+          <p>Run a city's power company. Price your power, keep the lines from overloading and beat your rival.</p>
+          <div class="row"><div class="tags"><span class="tag">Business</span><span class="tag">Sim</span></div><span class="play">Play</span></div>
+        </div>
+      </a>
+    </main>
+    <footer>© Addis Point · Made for YouTube Playables</footer>
+  </body>
+</html>
