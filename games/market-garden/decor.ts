@@ -145,7 +145,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   for (let i = 0; i < 40; ) {
     const x = rand(-26, 36), z = rand(-17, 22);
     if (isClear(x, z) || (x > -25.5 && x < 27.5 && z > -16 && z < 11)) continue;
-    const r = M.mesh(new THREE.DodecahedronGeometry(rand(0.25, 0.6), 0), i % 3 ? 0xa9a59c : 0x8f8a80, x, 0.15, z);
+    const r = M.mesh(new THREE.SphereGeometry(rand(0.25, 0.6), 10, 7), i % 3 ? 0xa9a59c : 0x8f8a80, x, 0.15, z);
     r.scale.y = 0.6;
     r.rotation.y = rand(0, 6);
     scene.add(r);
@@ -155,7 +155,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
     const x = rand(-24, 34), z = rand(-17, 22);
     if (isClear(x, z) || (x > -25.5 && x < 27.5 && z > -16 && z < 11)) continue;
     const b = new THREE.Group();
-    for (let k = 0; k < 3; k++) b.add(M.mesh(new THREE.IcosahedronGeometry(rand(0.35, 0.55), 0), 0x4c9f3d, rand(-0.35, 0.35), 0.35, rand(-0.3, 0.3)));
+    for (let k = 0; k < 3; k++) b.add(M.mesh(new THREE.SphereGeometry(rand(0.35, 0.55), 12, 9), k % 2 ? 0x5dbb5a : 0x4ead4c, rand(-0.35, 0.35), 0.35, rand(-0.3, 0.3)));
     b.position.set(x, 0, z);
     scene.add(b);
     i++;
@@ -231,7 +231,7 @@ export function setupDecor(scene: THREE.Scene): Decor {
   // ---- short-lived effects ----
   interface Puff { m: THREE.Mesh; life: number; max: number; v: THREE.Vector3; grow: number }
   const puffs: Puff[] = [];
-  const puffGeo = new THREE.IcosahedronGeometry(0.16, 0);
+  const puffGeo = new THREE.SphereGeometry(0.16, 10, 7);
   const addPuff = (at: THREE.Vector3, color: number, v: THREE.Vector3, life: number, grow: number) => {
     const m = new THREE.Mesh(puffGeo, new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.9 }));
     m.position.copy(at);
