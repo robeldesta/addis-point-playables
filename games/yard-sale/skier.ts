@@ -199,6 +199,9 @@ export class Skier {
   balance = 0; balV = 0;
   airT = 0; spin = 0;
   skid = 0;
+  carve = 0; // 0..1 how hard the skis are on edge
+  stride = 0; phase = 0; // skating cycle
+  landLimit = 12;
   normal = new THREE.Vector3(0, 1, 0);
   // race
   started = false;
@@ -497,7 +500,15 @@ export class Skier {
     if (skis === 0) mu = 0.35;
     const dv = mu * G * n.y * dt;
     vf = Math.sign(vf) * Math.max(0, Math.abs(vf) - dv);
-    if (this.hold && sp < 9 && this.poleCount()) vf += 1.6 * (this.poleCount() / 2) * (1 - sp / 9) * dt;
+    // skating + poling: legs push out in a V, arms swing with them
+    const skate = this.hold && skis > 0 && !this.finished ? Math.max(0, Math.min(1, 1 - (sp - 6) / 4)) : 0;
+    this.phase += dt * (5.5 + sp * 0.35);
+    this.stride += (skate - this.stride) * Math.min(1, dt * 4);
+    if (skate > 0) {
+      const pulse = 0.5 + 0.9 * Math.abs(Math.sin(this.phase));
+      vf += (1.3 + 0.5 * this.poleCount()) * (skis / 2) * pulse * skate * (1 - Math.min(1, sp / 10)) * dt;
+    }
+    this.carve += (Math.min(1, Math.abs(this.steer) * Math.min(1, sp / 8)) - this.carve) * Math.min(1, dt * 6);
     let k = this.hold ? 0.0095 + (0.0042 - 0.0095) * this.lean : 0.013;
     if (skis === 1) k *= 1.4;
     k /= this.speedMul;
@@ -564,8 +575,10 @@ export class Skier {
     if (sp > 0.5) mis = Math.acos(Math.max(-1, Math.min(1, F.dot(hv) / sp)));
     this.mode = "ski";
     if (this.invuln > 0) { this.yaw = Math.atan2(this.vel.x, this.vel.z); return; }
-    if (vn > 12.5 || (sp > 5 && mis > 0.8 && mis < 2.35) || this.skiCount() === 0 && vn > 6) {
-      this.crash(vn > 12.5 ? "land" : "edge");
+    // holding on soaks up a hard landing; tucked or letting go doesn't
+    const limit = this.landingLimit();
+    if (vn > limit || (sp > 5 && mis > 0.8 && mis < 2.35) || this.skiCount() === 0 && vn > 6) {
+      this.crash(vn > limit ? "land" : "edge");
       return;
     }
     if (mis >= 2.35) this.yaw += Math.PI; // landed switch: spin around
@@ -574,9 +587,30 @@ export class Skier {
       this.ev.trick?.(this, deg);
       this.vel.multiplyScalar(1 + 0.04 * (deg / 360));
     }
-    const sketch = vn > 7.5 || mis > 0.45;
+    const sketch = vn > limit * 0.65 || mis > 0.45;
     if (sketch) this.balV += (vn - 4) * 0.28 * (Math.random() < 0.5 ? -1 : 1);
     this.ev.land?.(this, sketch ? "sketchy" : "clean");
+  }
+
+  landingLimit() { return this.hold ? (this.lean > 0.6 ? 13.5 : 16) : 11.5; }
+
+  /** where the current flight comes down: impact speed into the slope and ski misalignment */
+  predictLanding() {
+    const c = this.course;
+    let x = this.pos.x, y = this.pos.y, z = this.pos.z, vx = this.vel.x, vy = this.vel.y, vz = this.vel.z;
+    const h = 0.04;
+    for (let i = 0; i < 120; i++) {
+      vy -= G * h; x += vx * h; y += vy * h; z += vz * h;
+      if (y <= c.height(x, z)) {
+        const n = c.normal(x, z, this.N);
+        const vn = -(vx * n.x + vy * n.y + vz * n.z);
+        const yaw = this.yaw;
+        const sp = Math.hypot(vx, vz);
+        const mis = sp > 0.5 ? Math.acos(Math.max(-1, Math.min(1, (Math.sin(yaw) * vx + Math.cos(yaw) * vz) / sp))) : 0;
+        return { vn, mis, t: i * h };
+      }
+    }
+    return { vn: 0, mis: 0, t: 99 };
   }
 
   private checkNets() {
@@ -824,13 +858,20 @@ export class Skier {
     for (const s of [1, -1]) {
       const L = s > 0 ? "L" : "R";
       const flail = air || Math.abs(this.balance) > 0.45 ? Math.sin(performance.now() / 70 + s) * 0.9 : 0;
-      P[("thigh" + L) as PartName].joint.rotation.set(-a - pelvisTilt + (s * this.sSteer * 0.08), 0, s * 0.03);
-      P[("shin" + L) as PartName].joint.rotation.set(2 * a, 0, 0);
-      P[("uArm" + L) as PartName].joint.rotation.set(-(0.35 + lean * 0.9) - pelvisTilt * 0.4 + flail, 0, s * (0.25 + (air ? 0.4 : 0)));
-      P[("lArm" + L) as PartName].joint.rotation.set(-(0.7 + lean * 0.5), 0, 0);
-      // boots flat on the skis
-      this.gear[("boot" + L) as GearName].anchor.rotation.set(-a, 0, 0);
-      this.gear[("pole" + L) as GearName].anchor.rotation.set(1.55 + lean * 0.5, 0, s * 0.08);
+      // skating: this leg pushes out and back while the opposite arm swings forward
+      const st = air ? 0 : this.stride;
+      const legPush = Math.max(0, Math.sin(this.phase) * s) * st;
+      const armSwing = Math.sin(this.phase) * -s * st; // + = forward
+      // carving: knees and skis roll onto the edge of the turn
+      const edge = air ? 0 : this.sSteer * (0.25 + 0.45 * sp);
+      P[("thigh" + L) as PartName].joint.rotation.set(-a - pelvisTilt + (s * this.sSteer * 0.08) + legPush * 0.45, s * legPush * 0.45, s * 0.03 + s * legPush * 0.3 + edge * 0.35);
+      P[("shin" + L) as PartName].joint.rotation.set(2 * a - legPush * 0.3, 0, 0);
+      P[("uArm" + L) as PartName].joint.rotation.set(-(0.35 + lean * 0.9) - pelvisTilt * 0.4 + flail - armSwing * 0.9, 0, s * (0.25 + (air ? 0.4 : 0)));
+      P[("lArm" + L) as PartName].joint.rotation.set(-(0.7 + lean * 0.5) - Math.max(0, armSwing) * 0.4, 0, 0);
+      // boots flat on the skis, tipped on edge when carving
+      this.gear[("boot" + L) as GearName].anchor.rotation.set(-a + legPush * 0.3, 0, edge * 0.6);
+      // poles plant when the arm swings forward, then drag back
+      this.gear[("pole" + L) as GearName].anchor.rotation.set(1.55 + lean * 0.5 - armSwing * 0.7, 0, s * 0.08);
       this.gear[("pole" + L) as GearName].anchor.position.set(0, -0.14, 0);
     }
     // pole hangs from the hand: offset center down its length

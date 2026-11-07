@@ -33,13 +33,14 @@ export class Sfx {
   private ok() { return this.ctx && this.enabled && this.ctx.state === "running" ? this.ctx : null; }
 
   /** continuous: speed in m/s, skid 0.., airborne */
-  ride(speed: number, skid: number, air: boolean) {
+  ride(speed: number, skid: number, air: boolean, carve = 0) {
     const ctx = this.ctx; if (!ctx || !this.wind || !this.carve) return;
     const t = ctx.currentTime;
     this.wind.g.gain.setTargetAtTime(Math.min(0.5, speed * speed * 0.0006), t, 0.1);
     this.wind.f.frequency.setTargetAtTime(300 + speed * 40, t, 0.1);
-    this.carve.g.gain.setTargetAtTime(air ? 0 : Math.min(0.35, 0.02 + skid * 0.05) * Math.min(1, speed / 4), t, 0.05);
-    this.carve.f.frequency.setTargetAtTime(1800 + skid * 300, t, 0.1);
+    const swoosh = carve * Math.min(1, speed / 12) * 0.3;
+    this.carve.g.gain.setTargetAtTime(air ? 0 : Math.min(0.4, 0.02 + skid * 0.05 + swoosh) * Math.min(1, speed / 4), t, 0.05);
+    this.carve.f.frequency.setTargetAtTime(1400 + skid * 300 + carve * 1200, t, 0.08);
   }
 
   private tone(freq: number, dur: number, type: OscillatorType, vol = 0.12, slide = 0, delay = 0) {
