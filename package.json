@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "cannon-es": "^0.20.0",
     "phaser": "^4.2.1",
     "three": "^0.187.0"
   },

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Yard Sale</title>
+    <!-- Official YouTube Playables SDK. Must load before the game. -->
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #bfe3ff; touch-action: none;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; font-family: Arial, Helvetica, sans-serif; }
+      #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      .hud { position: fixed; z-index: 2; pointer-events: none; color: #fff; font-weight: 900; text-shadow: 0 2px 0 rgba(0,0,0,.5), 0 0 6px rgba(0,20,60,.6); display: none; }
+      body.racing .hud { display: block; }
+      #pos { top: max(10px, env(safe-area-inset-top)); left: 14px; font-size: 34px; line-height: 1; }
+      #pos small { font-size: 16px; opacity: .9; }
+      #time { top: calc(max(10px, env(safe-area-inset-top)) + 38px); left: 14px; font-size: 16px; }
+      #spd { top: max(10px, env(safe-area-inset-top)); right: 14px; font-size: 32px; text-align: right; line-height: 1; }
+      #spd small { display: block; font-size: 12px; opacity: .85; }
+      #kit { top: calc(max(10px, env(safe-area-inset-top)) + 62px); left: 14px; font-size: 13px; }
+      #hp { width: 120px; height: 10px; background: rgba(0,0,0,.4); border: 2px solid #fff; border-radius: 6px; overflow: hidden; margin-bottom: 6px; }
+      #hp i { display: block; height: 100%; width: 100%; background: linear-gradient(#ff8a80, #e53935); transition: width .2s; }
+      #gear { display: flex; gap: 4px; }
+      #gear span { background: rgba(0,0,0,.4); border-radius: 6px; padding: 2px 5px; font-size: 11px; }
+      #gear span.off { background: #c62828; text-decoration: line-through; opacity: .9; }
+      #prog { left: 50%; transform: translateX(-50%); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 4px); width: min(70vw, 420px); height: 8px;
+        background: rgba(0,0,0,.35); border-radius: 6px; border: 2px solid rgba(255,255,255,.85); }
+      #prog b { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%); border: 1.5px solid #fff; }
+      #prog b.me { width: 14px; height: 14px; background: #ffeb3b; z-index: 2; border-color: #000; }
+      #leanbar { right: 14px; top: 38%; width: 12px; height: 110px; background: rgba(0,0,0,.3); border: 2px solid #fff; border-radius: 8px; overflow: hidden; }
+      #leanbar i { position: absolute; bottom: 0; left: 0; right: 0; height: 0%; background: linear-gradient(#ffeb3b, #ff6d00); }
+      #leanlbl { right: 6px; top: calc(38% + 118px); font-size: 10px; width: 30px; text-align: center; }
+      #big { position: fixed; left: 0; right: 0; top: 24%; text-align: center; font-weight: 900; font-size: min(15vw, 86px); color: #fff;
+        -webkit-text-stroke: 3px #0d47a1; text-shadow: 0 6px 0 rgba(0,0,0,.3); opacity: 0; pointer-events: none; z-index: 3; }
+      #big.show { animation: pop 1.3s ease-out forwards; }
+      #big.bad { color: #ffeb3b; -webkit-text-stroke: 3px #b71c1c; }
+      #sub { position: fixed; left: 0; right: 0; top: calc(24% + min(15vw, 86px) + 6px); text-align: center; font-weight: 900; font-size: 18px; color: #fff;
+        text-shadow: 0 2px 0 rgba(0,0,0,.5); opacity: 0; pointer-events: none; z-index: 3; }
+      #sub.show { animation: pop 1.8s ease-out forwards; }
+      #feed { position: fixed; z-index: 2; left: 14px; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 30px); pointer-events: none; font-size: 12px; font-weight: 800; color: #fff; }
+      #feed div { background: rgba(0,0,0,.45); padding: 3px 8px; border-radius: 8px; margin-top: 3px; animation: fade 4s forwards; }
+      @keyframes fade { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
+      @keyframes pop { 0% { opacity: 0; transform: scale(.4); } 15% { opacity: 1; transform: scale(1.12); } 25% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-16px); } }
+      #hint { position: fixed; left: 0; right: 0; bottom: 22%; text-align: center; z-index: 2; color: #fff; font-weight: 900; font-size: 16px; pointer-events: none;
+        text-shadow: 0 2px 0 rgba(0,0,0,.5); display: none; line-height: 1.7; font-size: 13px; padding: 0 12px; }
+      #hint span { background: rgba(0,0,0,.4); padding: 6px 12px; border-radius: 12px; }
+      .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 5;
+        background: rgba(8,30,70,.35); color: #fff; text-align: center; padding: 16px; box-sizing: border-box; overflow-y: auto; }
+      .screen.show { display: flex; }
+      .title { font-size: min(18vw, 100px); font-weight: 900; color: #fff; -webkit-text-stroke: 4px #0d47a1; line-height: .9; text-shadow: 0 8px 0 rgba(0,0,0,.3); transform: rotate(-5deg); }
+      .title b { color: #ff5252; -webkit-text-stroke: 4px #5d0000; }
+      .tag { margin-top: 10px; font-weight: 900; font-size: 15px; color: #e3f2fd; text-shadow: 0 2px 0 rgba(0,0,0,.4); }
+      .card { background: #fff; color: #102a43; border-radius: 20px; padding: 16px 18px; width: min(360px, calc(100vw - 32px)); box-shadow: 0 8px 0 rgba(0,0,0,.25); margin-top: 16px; box-sizing: border-box; text-align: left; }
+      .card h2 { margin: 0 0 4px; font-size: 20px; text-align: center; }
+      .card .lv { text-align: center; color: #607d8b; font-weight: 800; font-size: 13px; }
+      .btn { margin-top: 10px; width: 100%; height: 52px; border: 0; border-radius: 14px; background: #ff5252; color: #fff; font: 900 21px Arial, sans-serif; box-shadow: inset 0 -5px 0 rgba(0,0,0,.2); cursor: pointer; }
+      .btn.alt { background: #e3f2fd; color: #0d47a1; font-size: 16px; height: 42px; }
+      .btn:disabled { opacity: .45; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid #eceff1; font-size: 14px; font-weight: 700; }
+      .row:last-child { border-bottom: 0; }
+      .row.me { background: #fff8e1; margin: 0 -8px; padding: 6px 8px; border-radius: 8px; }
+      .row .t { font-variant-numeric: tabular-nums; color: #455a64; }
+      .row .dnf { color: #c62828; }
+      .shop .row button { border: 0; background: #1976d2; color: #fff; font: 900 13px Arial; border-radius: 10px; padding: 7px 10px; min-width: 70px; }
+      .shop .row button:disabled { background: #b0bec5; }
+      .shop .row small { display: block; color: #78909c; font-weight: 600; font-size: 11px; }
+      .coins { font-weight: 900; color: #f57f17; text-align: center; font-size: 18px; }
+      .inj { color: #b71c1c; font-weight: 800; font-size: 13px; line-height: 1.5; }
+      .medal { font-size: 48px; text-align: center; line-height: 1.1; }
+      .lvrow { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 8px; }
+      .lvrow button { width: 44px; height: 40px; border: 0; border-radius: 10px; background: #e3f2fd; color: #0d47a1; font: 900 20px Arial; }
+      .lvrow span { font-weight: 900; min-width: 150px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div class="hud" id="pos">1<small>st / 6</small></div>
+    <div class="hud" id="time">0:00.0</div>
+    <div class="hud" id="spd">0<small>km/h</small></div>
+    <div class="hud" id="kit"><div id="hp"><i id="hpfill"></i></div><div id="gear"></div></div>
+    <div class="hud" id="prog"></div>
+    <div class="hud" id="leanbar"><i id="leanfill"></i></div>
+    <div class="hud" id="leanlbl">TUCK</div>
+    <div id="feed"></div>
+    <div id="big"></div>
+    <div id="sub"></div>
+    <div id="hint"><span>HOLD to stay up · SLIDE UP to tuck · DRAG to steer</span><br><span>Let go to snowplow · Drag in the air to spin, land straight</span></div>
+
+    <div class="screen show" id="menu">
+      <div class="title">YARD<br><b>SALE</b></div>
+      <div class="tag">Ski fast. Crash hard. Lose everything.</div>
+      <div class="card">
+        <h2 id="mname">Trial Run</h2>
+        <div class="lv" id="mlv">Practice route</div>
+        <div class="lvrow"><button id="lvprev">‹</button><span id="mlvn">Level 0</span><button id="lvnext">›</button></div>
+        <button class="btn" id="go">Race</button>
+        <div class="coins" id="mcoins" style="margin-top:10px">🪙 0</div>
+        <div class="shop" id="shop"></div>
+      </div>
+    </div>
+
+    <div class="screen" id="results">
+      <div class="card">
+        <div class="medal" id="medal"></div>
+        <h2 id="rtitle">Finished</h2>
+        <div class="lv" id="rsub"></div>
+        <div id="table" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <h2>🏥 Injury report</h2>
+        <div class="inj" id="inj"></div>
+        <div class="coins" id="earn" style="margin-top:8px"></div>
+        <button class="btn" id="next">Next level</button>
+        <button class="btn alt" id="retry">Race again</button>
+        <button class="btn alt" id="tomenu">Menu</button>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
