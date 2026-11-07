@@ -269,6 +269,85 @@ function buildWorld() {
 }
 
 // ------------------------------------------------------------------
+// snow spray and carve tracks
+// ------------------------------------------------------------------
+const SPRAY = 600;
+const spPos = new Float32Array(SPRAY * 3).fill(-9999);
+const spVel = new Float32Array(SPRAY * 3);
+const spLife = new Float32Array(SPRAY);
+let spI = 0;
+const sprayGeo = new THREE.BufferGeometry();
+sprayGeo.setAttribute("position", new THREE.BufferAttribute(spPos, 3));
+const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.2, transparent: true, opacity: 0.85, depthWrite: false }));
+spray.frustumCulled = false;
+scene.add(spray);
+function emit(x: number, y: number, z: number, vx: number, vy: number, vz: number, life = 0.7) {
+  const i = spI; spI = (spI + 1) % SPRAY;
+  spPos[i * 3] = x; spPos[i * 3 + 1] = y; spPos[i * 3 + 2] = z;
+  spVel[i * 3] = vx; spVel[i * 3 + 1] = vy; spVel[i * 3 + 2] = vz;
+  spLife[i] = life * (0.6 + Math.random() * 0.6);
+}
+const sprayAcc = new Map<Skier, number>();
+function sprayFrom(s: Skier, dt: number) {
+  if (s.mode !== "ski") return;
+  const sp = s.speed();
+  const rate = s.carve * sp * 5 + s.skid * 12 + (s.hold ? 0 : sp * 2);
+  let acc = (sprayAcc.get(s) ?? 0) + rate * dt;
+  const out = -Math.sign(s.steer || 1); // spray flies to the outside of the turn
+  const fx = Math.sin(s.yaw), fz = Math.cos(s.yaw);
+  while (acc >= 1) {
+    acc -= 1;
+    const back = -0.4 - Math.random() * 0.5;
+    const side = (Math.random() - 0.5) * 0.4;
+    emit(s.pos.x + fx * back + fz * side, s.pos.y + 0.05, s.pos.z + fz * back - fx * side,
+      s.vel.x * 0.35 + fz * out * (1.5 + Math.random() * 2.5), 1 + Math.random() * 2.2, s.vel.z * 0.35 - fx * out * (1.5 + Math.random() * 2.5));
+  }
+  sprayAcc.set(s, acc);
+}
+function burst(p: THREE.Vector3, v: THREE.Vector3, n: number) {
+  for (let i = 0; i < n; i++) emit(p.x, p.y + 0.1, p.z, v.x * 0.3 + (Math.random() - 0.5) * 5, 1 + Math.random() * 4, v.z * 0.3 + (Math.random() - 0.5) * 5, 1);
+}
+function updateSpray(dt: number) {
+  for (let i = 0; i < SPRAY; i++) {
+    if (spLife[i] <= 0) continue;
+    spLife[i] -= dt;
+    if (spLife[i] <= 0) { spPos[i * 3 + 1] = -9999; continue; }
+    spVel[i * 3 + 1] -= 9.8 * dt;
+    spPos[i * 3] += spVel[i * 3] * dt; spPos[i * 3 + 1] += spVel[i * 3 + 1] * dt; spPos[i * 3 + 2] += spVel[i * 3 + 2] * dt;
+  }
+  sprayGeo.attributes.position.needsUpdate = true;
+}
+const TRACKS = 1600;
+const tracks = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.07, 0.42).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xb8c8dc, transparent: true, opacity: 0.7, depthWrite: false }), TRACKS);
+tracks.frustumCulled = false;
+tracks.count = 0;
+scene.add(tracks);
+let trI = 0;
+const trLast = new THREE.Vector3(0, -999, 0);
+const tM = new THREE.Matrix4(), tQ = new THREE.Quaternion(), tS = new THREE.Vector3(1, 1, 1), tP = new THREE.Vector3(), tN = new THREE.Vector3();
+function trackFrom(s: Skier) {
+  if (s.mode !== "ski" || s.skiCount() === 0) { trLast.y = -999; return; }
+  if (trLast.y > -900 && trLast.distanceToSquared(s.pos) < 0.35 * 0.35) return;
+  trLast.copy(s.pos);
+  course.normal(s.pos.x, s.pos.z, tN);
+  const f = new THREE.Vector3(s.vel.x, 0, s.vel.z);
+  if (f.lengthSq() < 0.01) return;
+  f.normalize().addScaledVector(tN, -f.dot(tN)).normalize();
+  const l = new THREE.Vector3().crossVectors(tN, f);
+  tQ.setFromRotationMatrix(tM.makeBasis(l, tN, f));
+  for (const side of [-0.1, 0.1]) {
+    if ((side < 0 ? !s.gear.skiR.on : !s.gear.skiL.on)) continue;
+    tP.copy(s.pos).addScaledVector(l, side);
+    tP.y = course.height(tP.x, tP.z) + 0.03;
+    tM.compose(tP, tQ, tS);
+    tracks.setMatrixAt(trI, tM);
+    trI = (trI + 1) % TRACKS;
+    tracks.count = Math.min(TRACKS, tracks.count + 1);
+  }
+  tracks.instanceMatrix.needsUpdate = true;
+}
+
+// ------------------------------------------------------------------
 // race state
 // ------------------------------------------------------------------
 const ph = new Physics();
@@ -312,6 +391,7 @@ const near = (s: Skier) => s.pos.distanceTo(player.pos) < 60;
 
 const events = {
   crash(s: Skier, cause: CrashCause, sp: number) {
+    burst(s.pos, s.vel, Math.min(60, 10 + sp * 2));
     if (s === player) {
       big(pick(crashWords[cause]), true);
       sfx.crashBig(); sfx.oof(1);
@@ -337,6 +417,7 @@ const events = {
     if (s === player) { tricks++; big(`${deg}!`, false, "Speed boost"); sfx.trick(); }
   },
   land(s: Skier, q: "clean" | "sketchy") {
+    burst(s.pos, s.vel, q === "sketchy" ? 30 : 14);
     if (s === player) { sfx.land(); if (q === "sketchy") feed("😬 Sketchy landing"); }
   },
   getUp(s: Skier, lost: GearName[], spare: boolean) {
@@ -357,6 +438,7 @@ function startRace(level: number) {
   litter.length = 0;
   course = new Course(level);
   buildWorld();
+  tracks.count = 0; trI = 0; trLast.y = -999;
   skiers = []; ais = [];
   player = new Skier({ scene, course, ph, ev: events, name: "You", flag: "⭐", isPlayer: true, look: { suit: 0xe53935, pants: 0x212121, helmet: 0xffeb3b, ski: 0xffeb3b }, });
   player.speedMul = 1 + save.wax * 0.03;
@@ -687,11 +769,36 @@ function frame(now: number) {
       if (endT > (player.dnf ? 3.5 : 3)) finishRace();
     }
     hud(dt);
-    sfx.ride(player.mode === "rag" ? 0 : player.speed(), player.skid, player.mode === "air");
+    sfx.ride(player.mode === "rag" ? 0 : player.speed(), player.skid, player.mode === "air", player.carve);
+    for (const s of skiers) if (s.pos.distanceToSquared(player.pos) < 50 * 50) sprayFrom(s, dt * timeScale);
+    trackFrom(player);
+    landingWarning(dt);
   }
   for (const s of skiers) s.render(dt * timeScale);
+  updateSpray(dt * timeScale);
   updateCamera(dt);
   renderer.render(scene, camera);
+}
+
+let warnT = 0, warnTxt = "";
+function landingWarning(dt: number) {
+  warnT -= dt;
+  if (warnT > 0) return;
+  warnT = 0.1;
+  let txt = "";
+  if (player.mode === "air" && player.airT > 0.1) {
+    const p = player.predictLanding();
+    if (p.t > 0.12) {
+      if (p.mis > 0.7 && p.mis < 2.4) txt = "↺ STRAIGHTEN YOUR SKIS";
+      else if (p.vn > 13.5 && !player.hold) txt = "⚠ HARD LANDING! HOLD ON";
+      else if (p.vn > 12 && player.lean > 0.6) txt = "⚠ HARD LANDING! STAND UP, DON'T TUCK";
+      else if (p.vn > 15.5) txt = "⚠ TOO BIG! BRACE!";
+    }
+  }
+  if (txt === warnTxt) return;
+  warnTxt = txt;
+  $("warn").innerHTML = txt ? `<span>${txt}</span>` : "";
+  $("warn").classList.toggle("show", !!txt);
 }
 
 function updateCamera(dt: number) {

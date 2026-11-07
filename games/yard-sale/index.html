@@ -39,6 +39,11 @@
       #sub.show { animation: pop 1.8s ease-out forwards; }
       #feed { position: fixed; z-index: 2; left: 14px; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 30px); pointer-events: none; font-size: 12px; font-weight: 800; color: #fff; }
       #feed div { background: rgba(0,0,0,.45); padding: 3px 8px; border-radius: 8px; margin-top: 3px; animation: fade 4s forwards; }
+      #warn { position: fixed; left: 0; right: 0; top: 16%; text-align: center; z-index: 3; pointer-events: none; display: none; }
+      #warn span { display: inline-block; background: #d50000; color: #fff; font-weight: 900; font-size: 17px; padding: 8px 14px; border-radius: 12px;
+        box-shadow: 0 4px 0 rgba(0,0,0,.3); animation: throb .4s ease-in-out infinite; }
+      #warn.show { display: block; }
+      @keyframes throb { 50% { transform: scale(1.08); } }
       @keyframes fade { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
       @keyframes pop { 0% { opacity: 0; transform: scale(.4); } 15% { opacity: 1; transform: scale(1.12); } 25% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-16px); } }
       #hint { position: fixed; left: 0; right: 0; bottom: 22%; text-align: center; z-index: 2; color: #fff; font-weight: 900; font-size: 16px; pointer-events: none;
@@ -81,6 +86,7 @@
     <div class="hud" id="prog"></div>
     <div class="hud" id="leanbar"><i id="leanfill"></i></div>
     <div class="hud" id="leanlbl">TUCK</div>
+    <div id="warn"></div>
     <div id="feed"></div>
     <div id="big"></div>
     <div id="sub"></div>

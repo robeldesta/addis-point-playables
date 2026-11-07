@@ -86,7 +86,7 @@ export class Course {
       const len = 6 + height * 2.2;
       this.jumps.push({ z: Math.round(jz), len, height, x: 0, w: 7 + R() * 4 });
       // steeper landing zone after the lip
-      for (let k = 0; k < 30; k++) { const i = Math.round(jz) + PRE + k; if (i < N) sg[i] += 9 * Math.sin((k / 30) * Math.PI); }
+      for (let k = 0; k < 75; k++) { const i = Math.round(jz) + PRE + k; const f = k < 50 ? 1 : 1 - (k - 50) / 25; if (i < N) sg[i] += (8 + height * 2) * f; }
     }
 
     let e = 0;
@@ -140,7 +140,7 @@ export class Course {
     const onPiste = trial ? 6 : Math.floor(8 + d * 40 + R() * 6);
     for (let k = 0; k < onPiste; k++) {
       const wz = 60 + R() * (this.length - 80);
-      if (this.jumps.some((jp) => wz > jp.z - jp.len - 12 && wz < jp.z + 35)) continue;
+      if (this.jumps.some((jp) => wz > jp.z - jp.len - 12 && wz < jp.z + 75)) continue;
       const lat = (R() * 2 - 1) * (this.w(wz) - 3);
       const rock = R() < 0.4;
       if (trial && Math.abs(lat) < 8) continue;
