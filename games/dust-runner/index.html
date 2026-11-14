@@ -101,6 +101,28 @@
       .targets .got { color: #3a2210; }
       @media (max-height: 500px) { .title { font-size: 52px; } .tag { margin-top: 6px; font-size: 13px; } .how { display: none; } #stagelist { margin-top: 8px; }
         .medal { font-size: 36px; } .rtime { font-size: 30px; } .card { padding: 10px 14px; } .card .btn { height: 40px; margin-top: 6px; font-size: 17px; } }
+      .garagebtn { height: 50px; font-size: 19px; margin-top: 10px; background: #15171b; }
+      .rcash { margin-top: 8px; font-size: 18px; font-weight: 900; color: #2e7d32; }
+      .gcard { width: min(400px, calc(100vw - 24px)); text-align: left; }
+      .ghead { display: flex; justify-content: space-between; align-items: center; }
+      .cash { font-size: 22px; font-weight: 900; color: #2e7d32; }
+      .tsel { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+      .tinfo { flex: 1; text-align: center; } .tinfo b { display: block; font-size: 19px; } .tinfo small { display: block; font-size: 12px; font-weight: 700; color: #8a6a50; min-height: 30px; }
+      .arrow { width: 44px; height: 44px; border: 0; border-radius: 12px; background: #fff3e6; color: #8a2a00; font: 900 28px Arial; cursor: pointer; }
+      #tstats { margin-top: 6px; }
+      .stat { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; margin-top: 4px; }
+      .stat span { width: 74px; } .stat i { flex: 1; height: 9px; border-radius: 5px; background: #eee3d6; overflow: hidden; display: block; }
+      .stat i b { display: block; height: 100%; background: linear-gradient(90deg, #ffb74d, #ff5a1f); }
+      .stat i b.up { background: linear-gradient(90deg, #81c784, #2e7d32); }
+      .gcard #tact { height: 46px; font-size: 19px; }
+      #uplist { margin-top: 10px; border-top: 2px solid #f0e4d6; padding-top: 6px; }
+      .up { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+      .up .ic { font-size: 22px; width: 28px; text-align: center; }
+      .up .nm { flex: 1; } .up .nm b { display: block; font-size: 14px; } .up .nm small { font-size: 11px; font-weight: 700; color: #8a6a50; }
+      .pips { display: flex; gap: 3px; } .pips i { width: 10px; height: 14px; border-radius: 3px; background: #eee3d6; } .pips i.on { background: #2e7d32; }
+      .up button { width: 84px; height: 38px; border: 0; border-radius: 10px; background: #2e7d32; color: #fff; font: 900 14px Arial; cursor: pointer; box-shadow: inset 0 -3px 0 rgba(0,0,0,.2); }
+      .up button:disabled { background: #cfc3b5; cursor: default; }
+      @media (max-height: 500px) { .gcard { width: min(640px, calc(100vw - 24px)); } #uplist { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; } .tinfo small { min-height: 0; } }
       .pedal.on { transform: scale(.93); filter: brightness(1.15); }
       #keys { position: fixed; z-index: 2; right: 14px; top: 70px; color: #fff; font: 800 12px Arial; text-align: right; text-shadow: 0 1px 0 rgba(0,0,0,.5);
         display: none; line-height: 1.6; pointer-events: none; }
@@ -144,6 +166,7 @@
       <div class="tag">Long-travel trophy truck. Open desert. Big air.</div>
       <div id="stagelist"></div>
       <div class="medals" id="medals"></div>
+      <button class="btn garagebtn" id="garagebtn">🔧 GARAGE · <span id="cash1">$0</span></button>
       <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake, F for focus<br>Big air fills FOCUS: slow time to line up landings. Stay near the route: far off it, the clock runs double.</div>
     </div>
     <div class="screen" id="results">
@@ -155,9 +178,24 @@
         <div class="rsub" id="rpen"></div>
         <div class="rsub strong" id="rbest"></div>
         <div class="targets" id="rtargets"></div>
+        <div class="rcash" id="rcash"></div>
         <button class="btn" id="rretry">Retry</button>
         <button class="btn alt" id="rnext">Next stage</button>
         <button class="btn alt" id="rmenu">Stages</button>
+      </div>
+    </div>
+    <div class="screen" id="garage">
+      <div class="card gcard">
+        <div class="ghead"><h2>Garage</h2><span class="cash" id="cash2">$0</span></div>
+        <div class="tsel">
+          <button class="arrow" id="tprev" aria-label="Previous truck">‹</button>
+          <div class="tinfo"><b id="tname"></b><small id="tblurb"></small></div>
+          <button class="arrow" id="tnext" aria-label="Next truck">›</button>
+        </div>
+        <div id="tstats"></div>
+        <button class="btn" id="tact">Selected</button>
+        <div id="uplist"></div>
+        <button class="btn alt" id="gback">Back</button>
       </div>
     </div>
     <script type="module" src="./main.ts"></script>

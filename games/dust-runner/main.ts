@@ -7,6 +7,7 @@ import { Sfx } from "./sfx";
 import { BIOMES, medalFor, MEDAL_ICON, type Biome, type Medal } from "./biomes";
 import { buildWorld, type World } from "./world";
 import type { Terrain } from "./terrain";
+import { TRUCKS, UPGRADES, MAX_LEVEL, buildSpec, rate, upgradePrice, payout, type Levels } from "./trucks";
 import { makeRival, rivalStep, rivalRecover, gridPlace, wallCollide, truckCollide, LapCounter, type Rival } from "./race";
 
 // Dust Runner: trophy truck stages across five desert places. Each stage is
@@ -23,8 +24,9 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 // ------------------------------------------------------------------
 // save
 // ------------------------------------------------------------------
-interface Save { bestAir: number; places: Record<string, number>; race: Record<string, { pos: number; time: number }> }
-let save: Save = { bestAir: 0, places: {}, race: {} };
+interface Garage { cash: number; owned: string[]; cur: string; lv: Record<string, Levels> }
+interface Save { bestAir: number; places: Record<string, number>; race: Record<string, { pos: number; time: number }>; garage: Garage }
+let save: Save = { bestAir: 0, places: {}, race: {}, garage: { cash: 0, owned: ["rookie"], cur: "rookie", lv: {} } };
 const persist = () => { P.save(GAME_ID, JSON.stringify(save)); };
 
 // ------------------------------------------------------------------
@@ -188,8 +190,18 @@ function updateDust(dt: number) {
 // truck
 // ------------------------------------------------------------------
 const truck = new Truck();
-const view = new TruckView();
+let view = new TruckView();
 scene.add(view.root);
+const truckDef = () => TRUCKS.find((t) => t.id === save.garage.cur) ?? TRUCKS[0];
+const levels = (id: string): Levels => (save.garage.lv[id] ??= [0, 0, 0, 0]);
+/** puts the selected truck, with its upgrades, under the player */
+function applyTruck() {
+  const d = truckDef();
+  truck.spec = buildSpec(d, levels(d.id));
+  scene.remove(view.root);
+  view = new TruckView(d.livery);
+  scene.add(view.root);
+}
 const sfx = new Sfx();
 let paused = false;
 P.onAudioChange((on) => sfx.setEnabled(on));
@@ -278,7 +290,7 @@ function readInput(dt: number, out: Input): Input {
 type Mode = "menu" | "drive";
 let mode: Mode = "menu";
 const input: Input = { throttle: 0, brake: 0, steer: 0, handbrake: false };
-let penalty = 0, offTrack = false;
+let penalty = 0, offTrack = false, runAir = 0;
 // focus: slow motion earned by air time
 let focus = 0, focusOn = false, timeScale = 1;
 const FOCUS_SCALE = 0.35, FOCUS_DRAIN = 0.3, FOCUS_FILL = 0.2; // drain per real second, fill per second of air
@@ -313,7 +325,7 @@ function startStage(i: number) {
   $("menu").classList.remove("show");
   $("results").classList.remove("show");
   setFocus(false);
-  focus = 0; penalty = 0;
+  focus = 0; penalty = 0; runAir = 0;
   for (const c of world.knocks) if (c.down || c.tilt) { c.down = false; c.tilt = 0; c.tiltV = 0; c.apply(_kq.identity()); }
   phase = "count";
   if (isRace()) gridAll(); else placeAtTrack(world.startK - 14);
@@ -360,6 +372,8 @@ function finishRace() {
   const prev = save.race[b.id];
   const best = !prev || place < prev.pos || (place === prev.pos && t < prev.time);
   if (best) save.race[b.id] = { pos: place, time: t };
+  const earned = payout(POS_MEDAL[place], true, runAir);
+  save.garage.cash += earned;
   persist();
   sfx.ding();
   pop(place === 1 ? "YOU WIN!" : `${ORD[place]} PLACE`, fmt2(t), place === 1 ? "" : place === 4 ? "bad" : "");
@@ -376,6 +390,7 @@ function finishRace() {
     const order = rivals.map((r) => ({ name: r.name, t: r.done, prog: r.lap.prog, me: false }))
       .sort((a, c) => (a.t && c.t ? a.t - c.t : a.t ? -1 : c.t ? 1 : c.prog - a.prog));
     order.splice(place - 1, 0, { name: "You", t, prog: 0, me: true });
+    $("rcash").textContent = `+$${earned} · you have $${save.garage.cash}`;
     $("rtargets").innerHTML = order.map((o, i) => `<span class="${o.me ? "got" : ""}">${ORD[i + 1]} ${o.name} ${o.t ? fmt2(o.t) : "racing"}</span>`).join("");
     ($("rnext") as HTMLButtonElement).style.display = "none";
     $("results").classList.add("show");
@@ -390,6 +405,8 @@ function finishStage() {
   const prev = save.places[b.id] ?? 0;
   const best = !prev || t < prev;
   if (best) save.places[b.id] = t;
+  const earned = payout(medalFor(b, t), true, runAir);
+  save.garage.cash += earned;
   persist();
   sfx.ding();
   const m = medalFor(b, t);
@@ -404,6 +421,7 @@ function finishStage() {
     $("rpen").textContent = penalty > 0.05 ? `includes +${penalty.toFixed(1)}s off the route` : "Clean run, no off-route time";
     $("rbest").textContent = best ? "New best time!" : `Best ${fmt2(prev)}`;
     $("rtargets").innerHTML = targetsHtml(b, save.places[b.id]);
+    $("rcash").textContent = `+$${earned} · you have $${save.garage.cash}`;
     const nx = $("rnext") as HTMLButtonElement;
     nx.style.display = idx < BIOMES.length - 1 ? "" : "none";
     nx.disabled = !unlocked(idx + 1);
@@ -447,10 +465,69 @@ function buildStageList() {
     list.appendChild(el);
   });
   $("medals").textContent = `${medals} / ${BIOMES.length} places medalled`;
+  $("cash1").textContent = `$${save.garage.cash}`;
 }
 $("rretry").addEventListener("click", () => startStage(stageIdx));
 $("rnext").addEventListener("click", () => { if (unlocked(stageIdx + 1)) startStage(stageIdx + 1); });
 $("rmenu").addEventListener("click", showMenu);
+
+// ---- garage ----
+let gIdx = 0;
+function openGarage() {
+  gIdx = Math.max(0, TRUCKS.findIndex((t) => t.id === save.garage.cur));
+  $("menu").classList.remove("show");
+  $("garage").classList.add("show");
+  drawGarage();
+}
+function drawGarage() {
+  const g = save.garage, d = TRUCKS[gIdx];
+  const own = g.owned.includes(d.id);
+  $("cash2").textContent = `$${g.cash}`;
+  $("tname").textContent = `${d.name}${own ? "" : " 🔒"}`;
+  $("tblurb").textContent = d.blurb;
+  const base = rate(buildSpec(d, [0, 0, 0, 0])), now = rate(buildSpec(d, levels(d.id)));
+  const row = (label: string, k: keyof typeof base) =>
+    `<div class="stat"><span>${label}</span><i><b class="up" style="width:${now[k]}%"><b style="width:${(base[k] / now[k]) * 100}%"></b></b></i></div>`;
+  $("tstats").innerHTML = row("Power", "power") + row("Suspension", "susp") + row("Grip", "grip") + row("Stability", "stab");
+  const act = $("tact") as HTMLButtonElement;
+  if (!own) { act.textContent = `Buy $${d.price}`; act.disabled = g.cash < d.price; }
+  else if (g.cur === d.id) { act.textContent = "Driving this one"; act.disabled = true; }
+  else { act.textContent = "Drive this truck"; act.disabled = false; }
+  act.style.opacity = act.disabled ? "0.55" : "1";
+  const lv = levels(d.id);
+  $("uplist").innerHTML = UPGRADES.map((u, i) => {
+    const price = upgradePrice(d, lv[i]);
+    const pips = Array.from({ length: MAX_LEVEL }, (_, j) => `<i class="${j < lv[i] ? "on" : ""}"></i>`).join("");
+    const label = lv[i] >= MAX_LEVEL ? "MAX" : `$${price}`;
+    return `<div class="up"><span class="ic">${u.icon}</span><span class="nm"><b>${u.name}</b><small>${u.blurb}</small></span><span class="pips">${pips}</span>` +
+      `<button data-i="${i}" ${!own || lv[i] >= MAX_LEVEL || g.cash < price ? "disabled" : ""}>${label}</button></div>`;
+  }).join("");
+}
+$("uplist").addEventListener("click", (e) => {
+  const i = Number((e.target as HTMLElement).closest("button")?.dataset.i ?? -1);
+  if (i < 0) return;
+  const d = TRUCKS[gIdx], lv = levels(d.id), price = upgradePrice(d, lv[i]);
+  if (!save.garage.owned.includes(d.id) || lv[i] >= MAX_LEVEL || save.garage.cash < price) return;
+  save.garage.cash -= price; lv[i]++;
+  persist(); sfx.unlock(); sfx.ding();
+  if (d.id === save.garage.cur) applyTruck();
+  drawGarage();
+});
+$("tact").addEventListener("click", () => {
+  const g = save.garage, d = TRUCKS[gIdx];
+  if (!g.owned.includes(d.id)) {
+    if (g.cash < d.price) return;
+    g.cash -= d.price; g.owned.push(d.id); sfx.unlock(); sfx.ding();
+  }
+  g.cur = d.id;
+  persist();
+  applyTruck();
+  drawGarage();
+});
+$("tprev").addEventListener("click", () => { gIdx = (gIdx + TRUCKS.length - 1) % TRUCKS.length; drawGarage(); });
+$("tnext").addEventListener("click", () => { gIdx = (gIdx + 1) % TRUCKS.length; drawGarage(); });
+$("garagebtn").addEventListener("click", openGarage);
+$("gback").addEventListener("click", () => { $("garage").classList.remove("show"); showMenu(); });
 $("quit").addEventListener("pointerdown", (e) => { e.stopPropagation(); showMenu(); });
 
 let popTimer: number | undefined;
@@ -558,6 +635,7 @@ function airTick(dt: number) {
   if (inAir && !wasAir) { launchX = truck.pos.x; launchZ = truck.pos.z; airPeak = 0; }
   if (inAir) airPeak = Math.max(airPeak, truck.airTime);
   if (inAir && truck.airTime > 0.15 && mode === "drive" && !focusOn) focus = Math.min(1, focus + FOCUS_FILL * dt);
+  if (inAir && truck.airTime > 0.15 && mode === "drive" && phase === "run") runAir += dt;
   if (!inAir && wasAir) {
     const dist = Math.hypot(truck.pos.x - launchX, truck.pos.z - launchZ);
     const hard = truck.bottomOut > 3 || truck.impact > 4;
@@ -739,7 +817,9 @@ async function boot() {
     if (raw) save = { ...save, ...JSON.parse(raw) };
     if (!save.places) save.places = {};
     if (!save.race) save.race = {};
+    if (!save.garage) save.garage = { cash: 0, owned: ["rookie"], cur: "rookie", lv: {} };
   } catch { /* fresh save */ }
+  applyTruck();
   if (DEBUG) document.body.classList.add("debug");
   let first = 0;
   for (let i = 0; i < BIOMES.length; i++) if (unlocked(i) && !BIOMES[i].stadium) first = i;
@@ -748,7 +828,7 @@ async function boot() {
   for (let i = 0; i < 60; i++) physicsStep(DT); // settle the suspension
   buildStageList();
   if (qs.has("place")) startStage(+(qs.get("place") || 0));
-  if (DEBUG) Object.assign(window as any, { scene, camera, renderer, truck, get world() { return world; }, get rivals() { return rivals; }, get lapC() { return lapC; } });
+  if (DEBUG) Object.assign(window as any, { scene, camera, renderer, truck, get world() { return world; }, get rivals() { return rivals; }, get lapC() { return lapC; }, get save() { return save; } });
   last = performance.now();
   requestAnimationFrame(frame);
   P.firstFrameReady();

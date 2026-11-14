@@ -25,7 +25,12 @@ export const SPEC = {
   brake: 9000,
   drag: 3.0,
   maxSteer: 0.6,
+  grip: 1,           // tyre grip multiplier
+  assist: 1,         // strength of the in-air levelling assist
+  lift: 0.55,        // where tyre forces act, 0 = road, 1 = centre of mass (higher = harder to roll over)
+  yawDamp: 1,        // how strongly slides are calmed
 };
+export type Spec = typeof SPEC;
 
 const MOUNTS: [number, number, number, boolean][] = [
   [1.12, -0.05, 1.72, true],
@@ -67,6 +72,7 @@ const _f = new THREE.Vector3(), _s = new THREE.Vector3(), _r = new THREE.Vector3
 const _p = new THREE.Vector3(), _tmp = new THREE.Vector3(), _q = new THREE.Quaternion(), _qi = new THREE.Quaternion();
 
 export class Truck {
+  spec: Spec = { ...SPEC, inertia: SPEC.inertia.clone() };
   pos = new THREE.Vector3();
   q = new THREE.Quaternion();
   vel = new THREE.Vector3();
@@ -105,7 +111,7 @@ export class Truck {
   }
 
   step(dt: number, inp: Input, T: Terrain) {
-    const S = SPEC;
+    const S = this.spec;
     const up = _up.set(0, 1, 0).applyQuaternion(this.q);
     const fw = _fw.set(0, 0, 1).applyQuaternion(this.q);
     const rt = _rt.set(-1, 0, 0).applyQuaternion(this.q);
@@ -187,7 +193,7 @@ export class Truck {
       _v.crossVectors(this.ang, _r).add(this.vel);
       const vl = _v.dot(_f), vs = _v.dot(_s);
       const onRoad = T.nearest(w.contact.x, w.contact.z).d < 8;
-      const mu = onRoad ? 1.12 : 0.92;
+      const mu = (onRoad ? 1.12 : 0.92) * S.grip;
       const maxF = mu * Math.min(N, 11000);
 
       let Fl = 0;
@@ -212,7 +218,7 @@ export class Truck {
       if (!w.front) spin += ws;
 
       // apply tyre force partway up towards the centre of mass (stability assist)
-      const lift = _tmp.subVectors(this.pos, w.contact).dot(up) * 0.55;
+      const lift = _tmp.subVectors(this.pos, w.contact).dot(up) * S.lift;
       _p.copy(w.contact).addScaledVector(up, lift);
       _a.copy(_f).multiplyScalar(Fl).addScaledVector(_s, Fs);
       this.addForceAt(_a, _p);
@@ -267,16 +273,16 @@ export class Truck {
         const want = Math.max(-0.3, Math.min(0.3, pathPitch * 0.4));
         const have = Math.asin(Math.max(-1, Math.min(1, fw.y)));
         _p.crossVectors(fw, up).normalize();
-        _a.addScaledVector(_p, (want - have) * 3.4 * dt);
+        _a.addScaledVector(_p, (want - have) * 3.4 * S.assist * dt);
       }
-      _a.addScaledVector(fw, rt.y * 3.0 * dt);
+      _a.addScaledVector(fw, rt.y * 3.0 * S.assist * dt);
       this.ang.add(_a);
       this.ang.multiplyScalar(1 - 0.9 * dt);
     } else {
       this.airTime = 0;
       // gentle yaw damping keeps slides catchable
       const yawRate = this.ang.dot(up);
-      this.torque.addScaledVector(up, -yawRate * (grounded === 4 ? 3200 : 9000));
+      this.torque.addScaledVector(up, -yawRate * (grounded === 4 ? 3200 : 9000) * S.yawDamp);
     }
 
     // integrate
