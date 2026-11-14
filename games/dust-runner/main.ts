@@ -248,6 +248,10 @@ function cactusMatrix(i: number) {
   cactusMesh.setMatrixAt(i, dummy.matrix);
 }
 cacti.forEach((_, i) => cactusMatrix(i));
+// things the truck can flatten: flag posts and signs
+interface Knock { x: number; z: number; r: number; tilt: number; tiltV: number; ax: number; az: number; down: boolean; apply: (q: THREE.Quaternion) => void }
+const knocks: Knock[] = [];
+const _kq = new THREE.Quaternion(), _kax = new THREE.Vector3();
 // course markers: posts with flags along both edges
 {
   const every = Math.round(18 / terrain.step);
@@ -262,11 +266,19 @@ cacti.forEach((_, i) => cactusMatrix(i));
     for (const side of [1, -1]) {
       const x = s.x + s.tz * side * (TRACK_HALF_W + 3.2), z = s.z - s.tx * side * (TRACK_HALF_W + 3.2);
       const y = terrain.height(x, z);
-      dummy.position.set(x, y + 0.9, z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
-      post.setMatrixAt(m, dummy.matrix);
-      dummy.position.set(x, y + 1.6, z); dummy.rotation.set(0, Math.atan2(s.tx, s.tz) + Math.PI / 2, 0); dummy.updateMatrix();
-      flag.setMatrixAt(m, dummy.matrix);
+      const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(s.tx, s.tz) + Math.PI / 2);
+      const base = new THREE.Vector3(x, y, z), idx = m;
+      const pm4 = new THREE.Matrix4(), off = new THREE.Matrix4(), yawM = new THREE.Matrix4().makeRotationFromQuaternion(yaw), one = new THREE.Vector3(1, 1, 1);
+      const apply = (tq: THREE.Quaternion) => {
+        pm4.compose(base, tq, one).multiply(off.makeTranslation(0, 0.9, 0));
+        post.setMatrixAt(idx, pm4);
+        pm4.compose(base, tq, one).multiply(off.makeTranslation(0, 1.6, 0)).multiply(yawM);
+        flag.setMatrixAt(idx, pm4);
+        post.instanceMatrix.needsUpdate = flag.instanceMatrix.needsUpdate = true;
+      };
+      apply(new THREE.Quaternion());
       flag.setColorAt(m, (k / every) % 2 ? ca : cb);
+      knocks.push({ x, z, r: 1.7, tilt: 0, tiltV: 0, ax: 1, az: 0, down: false, apply });
       m++;
     }
   }
@@ -298,6 +310,7 @@ function canvasTex(w: number, h: number, draw: (g: CanvasRenderingContext2D) => 
   banner.position.y = 6;
   banner.castShadow = true;
   arch.add(banner);
+  for (const side of [1, -1]) boulders.push({ x: s.x + s.tz * side * span, z: s.z - s.tx * side * span, r: 0.4, top: s.y + 7 });
   arch.position.set(s.x, s.y + 0.2, s.z);
   arch.rotation.y = head;
   scene.add(arch);
@@ -321,6 +334,8 @@ function canvasTex(w: number, h: number, draw: (g: CanvasRenderingContext2D) => 
       g.position.set(x, terrain.height(x, z), z);
       g.rotation.y = Math.atan2(ss.tx, ss.tz) + Math.PI;
       scene.add(g);
+      const yawQ = g.quaternion.clone();
+      knocks.push({ x, z, r: 1.9, tilt: 0, tiltV: 0, ax: 1, az: 0, down: false, apply: (tq) => { g.quaternion.copy(tq).multiply(yawQ); } });
     }
   }
 }
@@ -546,6 +561,25 @@ function gameTick(dt: number) {
     }
   }
 
+  for (const c of knocks) {
+    if (!c.down) {
+      const dx = c.x - truck.pos.x, dz = c.z - truck.pos.z;
+      if (dx * dx + dz * dz < c.r * c.r && truck.vel.lengthSq() > 4) {
+        c.down = true;
+        const v = Math.hypot(truck.vel.x, truck.vel.z) || 1;
+        c.ax = truck.vel.z / v; c.az = -truck.vel.x / v;
+        c.tiltV = 3 + v * 0.25;
+        truck.vel.multiplyScalar(0.97);
+        sfx.thud(0.3);
+        for (let k = 0; k < 6; k++) emitDust(c.x, terrain.height(c.x, c.z) + 0.3, c.z, (Math.random() - 0.5) * 3, Math.random() * 2, (Math.random() - 0.5) * 3, 1, 1.2);
+      }
+    } else if (c.tilt < 1.5) {
+      c.tiltV += 8 * dt;
+      c.tilt = Math.min(1.5, c.tilt + c.tiltV * dt);
+      c.apply(_kq.setFromAxisAngle(_kax.set(c.ax, 0, c.az), c.tilt));
+    }
+  }
+
   // dust from the tyres
   const spd = truck.vel.length();
   for (const w of truck.wheels) {
@@ -707,7 +741,7 @@ async function boot() {
     const raw = await P.loadSave(GAME_ID);
     if (raw) save = { ...save, ...JSON.parse(raw) };
   } catch { /* fresh save */ }
-  if (DEBUG) { document.body.classList.add("debug"); Object.assign(window as any, { scene, camera, renderer, truck }); }
+  if (DEBUG) { document.body.classList.add("debug"); Object.assign(window as any, { scene, camera, renderer, truck, knocks }); }
   placeAtTrack(0);
   for (let i = 0; i < 60; i++) physicsStep(DT); // settle the suspension
   if (qs.has("drive")) startDrive();
