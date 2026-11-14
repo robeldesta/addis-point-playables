@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { Terrain, N, CELL, HALF } from "./terrain";
+import { Terrain } from "./terrain";
 import type { Biome } from "./biomes";
 
 // Builds everything you see for one stage: ground, far mountains, plants,
@@ -49,12 +49,14 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
   const cnt = terrain.count;
   const loop = terrain.loop, stadium = !!biome.stadium;
   const startK = loop ? 0 : 24, finishK = loop ? cnt : cnt - 30;
+  const { N, CELL, HALF } = terrain;
 
   // ---------------- ground ----------------
   {
     const R = N + 1;
     const pos = new Float32Array(R * R * 3);
     const col = new Float32Array(R * R * 3);
+    const nor = new Float32Array(R * R * 3);
     let mn = 1e9, mx = -1e9;
     for (const v of terrain.h) { mn = Math.min(mn, v); mx = Math.max(mx, v); }
     const g0 = new THREE.Color(biome.ground[0]), g1 = new THREE.Color(biome.ground[1]), crest = new THREE.Color(biome.crest);
@@ -71,6 +73,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
       c.copy(g0).lerp(g1, 0.5 + 0.5 * n1);
       c.lerp(crest, clamp(((y - mn) / Math.max(1, mx - mn) - 0.45) * 1.6, 0, 0.6));
       terrain.normal(x, z, nrm);
+      nor[idx * 3] = nrm.x; nor[idx * 3 + 1] = nrm.y; nor[idx * 3 + 2] = nrm.z;
       if (bands.length && nrm.y < 0.9) {
         const b = bands[((Math.floor((y + n1 * 0.8) / 2.6) % bands.length) + bands.length) % bands.length];
         c.lerp(b, clamp((0.9 - nrm.y) * 5, 0, 1));
@@ -85,20 +88,32 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
       const sh = 1 + n2 * 0.04;
       col[idx * 3] = c.r * sh; col[idx * 3 + 1] = c.g * sh; col[idx * 3 + 2] = c.b * sh;
     }
-    const index = new Uint32Array(N * N * 6);
-    let q = 0;
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-      const a = j * R + i, b = a + 1, cc = a + R + 1, d = a + R;
-      index[q++] = a; index[q++] = cc; index[q++] = b; index[q++] = a; index[q++] = d; index[q++] = cc;
+    // the ground is cut into square chunks so only what the camera sees is drawn
+    const groundMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    const CH = 64;
+    for (let cj = 0; cj < N; cj += CH) for (let ci = 0; ci < N; ci += CH) {
+      const w = Math.min(CH, N - ci), hgt = Math.min(CH, N - cj), cw = w + 1;
+      const cpos = new Float32Array(cw * (hgt + 1) * 3), ccol = new Float32Array(cpos.length), cnor = new Float32Array(cpos.length);
+      for (let j = 0; j <= hgt; j++) for (let i = 0; i <= w; i++) {
+        const src = ((cj + j) * R + ci + i) * 3, dst = (j * cw + i) * 3;
+        for (let k = 0; k < 3; k++) { cpos[dst + k] = pos[src + k]; ccol[dst + k] = col[src + k]; cnor[dst + k] = nor[src + k]; }
+      }
+      const index = new Uint32Array(w * hgt * 6);
+      let q = 0;
+      for (let j = 0; j < hgt; j++) for (let i = 0; i < w; i++) {
+        const a = j * cw + i, b = a + 1, cc = a + cw + 1, d = a + cw;
+        index[q++] = a; index[q++] = cc; index[q++] = b; index[q++] = a; index[q++] = d; index[q++] = cc;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(cpos, 3));
+      g.setAttribute("color", new THREE.BufferAttribute(ccol, 3));
+      g.setAttribute("normal", new THREE.BufferAttribute(cnor, 3));
+      g.setIndex(new THREE.BufferAttribute(index, 1));
+      g.computeBoundingSphere();
+      const m = new THREE.Mesh(g, groundMat);
+      m.receiveShadow = true;
+      group.add(m);
     }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
-    g.setIndex(new THREE.BufferAttribute(index, 1));
-    g.computeVertexNormals();
-    const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
-    m.receiveShadow = true;
-    group.add(m);
     // far floor up to the horizon, at the height of the map edge
     let edge = 0;
     for (let i = 0; i <= N; i += 8) edge += terrain.h[i] + terrain.h[N * R + i] + terrain.h[i * R] + terrain.h[i * R + N];
@@ -192,6 +207,8 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     mesh.castShadow = true; mesh.receiveShadow = true;
     group.add(mesh);
   }
+
+  if (biome.wreck) buildWreck(group, terrain, boulders, rnd, freeSpot);
 
   // ---------------- knockable instanced things ----------------
   const _q = new THREE.Quaternion(), _m = new THREE.Matrix4(), _o = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1);
@@ -347,7 +364,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     arch(startK, "START", "#d32f2f");
     arch(finishK, "FINISH", "#d32f2f", 7);
   }
-  const gateEvery = Math.round(230 / terrain.step);
+  const gateEvery = biome.gateCount ? Math.round((finishK - startK) / (biome.gateCount + 1)) : Math.round(230 / terrain.step);
   for (let k = startK + gateEvery; !loop && k < finishK - gateEvery * 0.6; k += gateEvery) {
     gates.push(k);
     arch(k, `CHECKPOINT ${gates.length}`, "#1e3a5f", 5);
@@ -531,4 +548,75 @@ function hoardTex() {
       g.fillText(["THUNDER", "BOWL", "DUST", "RUNNER"][i], i * 128 + 64, 34);
     }
   });
+}
+
+// ---------------- abandoned industrial zone: containers, tanks, wrecks ----------------
+function buildWreck(group: THREE.Group, terrain: Terrain, boulders: Boulder[], rnd: () => number, freeSpot: (d: number) => [number, number] | null) {
+  const W = terrain.routeW;
+  const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+  const rust = [0x9c4a2a, 0x2f5f7a, 0x6e7a3a, 0xb07a2a, 0x7a2f2a, 0x55606a];
+  const cont = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ color: 0xffffff }), 900);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
+  let n = 0;
+  const container = (x: number, z: number, yaw: number, stack = 1, solid = true) => {
+    const y = terrain.height(x, z) - 0.15;
+    for (let s = 0; s < stack && n < 900; s++) {
+      q.setFromAxisAngle(up, yaw + (s ? (rnd() - 0.5) * 0.25 : 0));
+      m.compose(v.set(x, y + s * 2.6, z), q, sc.set(2.44, 2.6, 6.1));
+      cont.setMatrixAt(n, m);
+      cont.setColorAt(n++, col.setHex(rust[Math.floor(rnd() * rust.length)]).multiplyScalar(0.8 + rnd() * 0.3));
+    }
+    if (!solid) return;
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
+    for (const o of [-2, 0, 2]) boulders.push({ x: x + fx * o, z: z + fz * o, r: 1.3, top: y + stack * 2.6 });
+  };
+  // narrow passages: a gauntlet of containers lining both edges of the route
+  const every = Math.round(260 / terrain.step);
+  for (let k = every; k < terrain.count - every; k += every + Math.round(rnd() * every * 0.5)) {
+    const len = 3 + Math.floor(rnd() * 3);
+    for (let c = 0; c < len; c++) {
+      const s = terrain.sample(k + c * Math.round(6.4 / terrain.step));
+      const yaw = Math.atan2(s.tx, s.tz);
+      for (const side of [1, -1]) {
+        const off = W + 1.4 + (side > 0 ? 0 : 0.3);
+        container(s.x + s.tz * side * off, s.z - s.tx * side * off, yaw, rnd() < 0.3 ? 2 : 1);
+      }
+    }
+  }
+  // junk yards and stacks out in the valley
+  for (let i = 0; i < 160; i++) {
+    const p = freeSpot(W + 12); if (!p) continue;
+    container(p[0], p[1], rnd() * Math.PI, 1 + Math.floor(rnd() * 3), true);
+  }
+  cont.count = n;
+  cont.castShadow = true; cont.receiveShadow = true;
+  group.add(cont);
+  // fuel tanks and rusty towers
+  const tankM = new THREE.MeshLambertMaterial({ color: 0x8c8478 });
+  const rustM = new THREE.MeshLambertMaterial({ color: 0x7a4a30 });
+  for (let i = 0; i < 26; i++) {
+    const p = freeSpot(W + 22); if (!p) continue;
+    const y = terrain.height(p[0], p[1]);
+    const r = 4 + rnd() * 5, h = 5 + rnd() * 8;
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 14), rnd() < 0.5 ? tankM : rustM);
+    t.position.set(p[0], y + h / 2 - 0.3, p[1]);
+    t.castShadow = true;
+    group.add(t);
+    boulders.push({ x: p[0], z: p[1], r: r + 0.2, top: y + h });
+  }
+  // power line pylons along the valley
+  const steel = new THREE.MeshLambertMaterial({ color: 0x5a5e66 });
+  for (let i = 0; i < 18; i++) {
+    const p = freeSpot(W + 15); if (!p) continue;
+    const y = terrain.height(p[0], p[1]);
+    const g = new THREE.Group();
+    for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.3, 18, 0.3), steel);
+      leg.position.set(dx * 1.2, 9, dz * 1.2); leg.rotation.set(dz * 0.06, 0, -dx * 0.06); g.add(leg);
+    }
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(9, 0.4, 0.4), steel); arm.position.y = 16; g.add(arm);
+    g.position.set(p[0], y, p[1]); g.rotation.y = rnd() * Math.PI;
+    group.add(g);
+    boulders.push({ x: p[0], z: p[1], r: 1.8, top: y + 18 });
+  }
 }

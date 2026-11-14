@@ -238,7 +238,7 @@ export class Truck {
       _v.crossVectors(this.ang, _r).add(this.vel);
       const vl = _v.dot(_f), vs = _v.dot(_s);
       const onRoad = T.nearest(w.contact.x, w.contact.z).d < 8;
-      const mu = (onRoad ? 1.12 : 1.0) * S.grip * (w.front ? S.frontGrip : S.rearGrip);
+      const mu = (onRoad ? 1.12 : 1.0) * (T.biome.grip ?? 1) * S.grip * (w.front ? S.frontGrip : S.rearGrip);
       const maxF = mu * Math.min(N, 11000);
 
       let Fl = 0;

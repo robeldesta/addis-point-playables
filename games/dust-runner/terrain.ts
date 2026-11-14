@@ -4,9 +4,7 @@
 
 import type { Biome } from "./biomes";
 
-export const N = 320;            // cells per side
-export const CELL = 1.5;        // metres per cell
-export const HALF = (N * CELL) / 2;
+// map size comes from the biome: small maps use 1.5 m cells, big ones 2 m
 const STEP = 0.5;                // route sample spacing (m)
 
 export const smooth = (a: number, b: number, x: number) => {
@@ -51,9 +49,12 @@ function featureHeight(f: Feature, u: number): number {
 export interface Sample { x: number; z: number; tx: number; tz: number; y: number }
 
 export class Terrain {
-  readonly h = new Float32Array((N + 1) * (N + 1));
-  readonly dist = new Float32Array((N + 1) * (N + 1)).fill(999);
-  readonly near = new Int32Array((N + 1) * (N + 1)).fill(-1);
+  readonly N: number;
+  readonly CELL: number;
+  readonly HALF: number;
+  readonly h: Float32Array;
+  readonly dist: Float32Array;
+  readonly near: Int32Array;
   readonly samples: Sample[] = [];
   readonly features: Feature[] = [];
   length = 0;
@@ -61,6 +62,14 @@ export class Terrain {
   readonly offRoute: number;
 
   constructor(readonly biome: Biome) {
+    const size = biome.size ?? 480;
+    this.CELL = size > 640 ? 2 : 1.5;
+    this.N = Math.ceil(size / this.CELL / 2) * 2;
+    this.HALF = (this.N * this.CELL) / 2;
+    const cells = (this.N + 1) * (this.N + 1);
+    this.h = new Float32Array(cells);
+    this.dist = new Float32Array(cells).fill(999);
+    this.near = new Int32Array(cells).fill(-1);
     this.routeW = biome.routeW;
     this.offRoute = biome.routeW + 14;
     this.buildRoute();
@@ -68,7 +77,7 @@ export class Terrain {
   }
 
   private buildRoute() {
-    const ctrl = this.biome.route.map(([x, z]) => [x * 1.25, z * 1.25] as [number, number]);
+    const ctrl = this.biome.ctrl ?? this.biome.route.map(([x, z]) => [x * 1.25, z * 1.25] as [number, number]);
     const K = ctrl.length;
     const loop = !!this.biome.loop;
     const P = (i: number) => loop ? ctrl[((i % K) + K) % K] : ctrl[Math.max(0, Math.min(K - 1, i))];
@@ -111,7 +120,8 @@ export class Terrain {
       for (let j = k - W; j <= k + W; j += 2) { acc += raw[loop ? ((j % m) + m) % m : Math.max(0, Math.min(m - 1, j))]; c++; }
       this.samples[k].y = acc / c - this.biome.sink;
     }
-    for (const [kind, frac, len] of this.biome.features) this.features.push({ kind, at: frac * this.length, len });
+    if (this.biome.featuresAt) for (const [kind, at, len] of this.biome.featuresAt(this)) this.features.push({ kind, at, len });
+    else for (const [kind, frac, len] of this.biome.features) this.features.push({ kind, at: frac * this.length, len });
   }
 
   featureAt(s: number): number {
@@ -124,28 +134,28 @@ export class Terrain {
     const B = this.biome;
     const wall = B.wall;           // distance over which the surroundings blend back in
     const R = this.routeW + wall + 4;
-    const rc = Math.ceil(R / CELL);
+    const rc = Math.ceil(R / this.CELL);
     for (let k = 0; k < this.samples.length; k++) {
       const p = this.samples[k];
-      const ci = Math.round((p.x + HALF) / CELL), cj = Math.round((p.z + HALF) / CELL);
-      for (let j = Math.max(0, cj - rc); j <= Math.min(N, cj + rc); j++) {
-        for (let i = Math.max(0, ci - rc); i <= Math.min(N, ci + rc); i++) {
-          const x = i * CELL - HALF, z = j * CELL - HALF;
+      const ci = Math.round((p.x + this.HALF) / this.CELL), cj = Math.round((p.z + this.HALF) / this.CELL);
+      for (let j = Math.max(0, cj - rc); j <= Math.min(this.N, cj + rc); j++) {
+        for (let i = Math.max(0, ci - rc); i <= Math.min(this.N, ci + rc); i++) {
+          const x = i * this.CELL - this.HALF, z = j * this.CELL - this.HALF;
           const d = Math.hypot(x - p.x, z - p.z);
-          const idx = j * (N + 1) + i;
+          const idx = j * (this.N + 1) + i;
           if (d < this.dist[idx]) { this.dist[idx] = d; this.near[idx] = k; }
         }
       }
     }
     const W = this.routeW;
-    for (let j = 0; j <= N; j++) {
-      for (let i = 0; i <= N; i++) {
-        const idx = j * (N + 1) + i;
-        const x = i * CELL - HALF, z = j * CELL - HALF;
+    for (let j = 0; j <= this.N; j++) {
+      for (let i = 0; i <= this.N; i++) {
+        const idx = j * (this.N + 1) + i;
+        const x = i * this.CELL - this.HALF, z = j * this.CELL - this.HALF;
         let h = B.base(x, z);
         // keep the truck inside the map
         const e = Math.max(Math.abs(x), Math.abs(z));
-        if (e > HALF - 28) h += ((e - HALF + 28) / 28) ** 2 * 26;
+        if (e > this.HALF - 28) h += ((e - this.HALF + 28) / 28) ** 2 * 26;
         const k = this.near[idx];
         if (k >= 0) {
           const d = this.dist[idx];
@@ -163,12 +173,12 @@ export class Terrain {
   }
 
   height(x: number, z: number): number {
-    let gx = (x + HALF) / CELL, gz = (z + HALF) / CELL;
-    gx = Math.max(0, Math.min(N - 1e-4, gx));
-    gz = Math.max(0, Math.min(N - 1e-4, gz));
+    let gx = (x + this.HALF) / this.CELL, gz = (z + this.HALF) / this.CELL;
+    gx = Math.max(0, Math.min(this.N - 1e-4, gx));
+    gz = Math.max(0, Math.min(this.N - 1e-4, gz));
     const i = Math.floor(gx), j = Math.floor(gz);
     const fx = gx - i, fz = gz - j;
-    const r = N + 1, b = j * r + i;
+    const r = this.N + 1, b = j * r + i;
     const h00 = this.h[b], h10 = this.h[b + 1], h01 = this.h[b + r], h11 = this.h[b + r + 1];
     if (fx > fz) return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
     return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
@@ -203,9 +213,9 @@ export class Terrain {
 
   /** nearest route sample index, and distance from the route centre */
   nearest(x: number, z: number, hint = -1): { k: number; d: number } {
-    const i = Math.round((x + HALF) / CELL), j = Math.round((z + HALF) / CELL);
-    if (i >= 0 && j >= 0 && i <= N && j <= N) {
-      const idx = j * (N + 1) + i;
+    const i = Math.round((x + this.HALF) / this.CELL), j = Math.round((z + this.HALF) / this.CELL);
+    if (i >= 0 && j >= 0 && i <= this.N && j <= this.N) {
+      const idx = j * (this.N + 1) + i;
       if (this.near[idx] >= 0) return { k: this.near[idx], d: this.dist[idx] };
     }
     let best = 1e9, bk = Math.max(0, hint);
