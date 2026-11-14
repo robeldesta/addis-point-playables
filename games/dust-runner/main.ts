@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as P from "../../src/platform/platform";
 import { Truck, type Input } from "./truck";
 import { TruckView } from "./model";
@@ -40,8 +41,16 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 host.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
+// soft studio reflections so paint and metal read as paint and metal
+{
+  const pm = new THREE.PMREMGenerator(renderer);
+  scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.55;
+  pm.dispose();
+}
 const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 1400);
 const hemi = new THREE.HemisphereLight(0xdbeaff, 0xc08850, 1.35);
 scene.add(hemi);
@@ -109,7 +118,7 @@ function loadWorld(i: number) {
   if (BIOMES[i].stadium) {
     RIVALS.forEach(([name, livery, cap, lat]) => {
       const r = makeRival(terrain, name, livery, cap, lat);
-      const v = new TruckView(livery);
+      const v = new TruckView({ livery, accent: 0xffffff, number: String(20 + rivals.length * 7) });
       rivals.push(r); rivalViews.push(v); scene.add(v.root);
     });
     lapC = new LapCounter(terrain, 0);
@@ -192,7 +201,7 @@ function updateDust(dt: number) {
 // truck
 // ------------------------------------------------------------------
 const truck = new Truck();
-let view = new TruckView();
+let view = new TruckView({ livery: 0xd32f2f, accent: 0xffffff, number: "11" });
 scene.add(view.root);
 const truckDef = () => TRUCKS.find((t) => t.id === save.garage.cur) ?? TRUCKS[0];
 const levels = (id: string): Levels => (save.garage.lv[id] ??= [0, 0, 0, 0]);
@@ -201,7 +210,7 @@ function applyTruck() {
   const d = truckDef();
   truck.spec = buildSpec(d, levels(d.id));
   scene.remove(view.root);
-  view = new TruckView(d.livery);
+  view = new TruckView({ livery: d.livery, accent: d.accent, trim: d.trim, number: d.number });
   scene.add(view.root);
 }
 const sfx = new Sfx();
