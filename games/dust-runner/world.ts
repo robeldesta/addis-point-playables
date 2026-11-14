@@ -47,7 +47,8 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
   const dummy = new THREE.Object3D();
   const W = terrain.routeW;
   const cnt = terrain.count;
-  const startK = 24, finishK = cnt - 30;
+  const loop = terrain.loop, stadium = !!biome.stadium;
+  const startK = loop ? 0 : 24, finishK = loop ? cnt : cnt - 30;
 
   // ---------------- ground ----------------
   {
@@ -107,7 +108,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     outer.position.y = edge - 1.5;
     group.add(outer);
     // distant mesas / mountains
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < (stadium ? 0 : 26); i++) {
       const a = (i / 26) * Math.PI * 2 + rnd() * 0.2;
       const r = HALF + 90 + rnd() * 260;
       const w = 30 + rnd() * 60, h = biome.farH[0] + rnd() * (biome.farH[1] - biome.farH[0]);
@@ -232,7 +233,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
   }
 
   // red & white barriers on the outside of the sharper bends
-  {
+  if (!stadium) {
     const blockG = new THREE.BoxGeometry(2.0, 0.8, 0.35); blockG.translate(0, 0.4, 0);
     const spots: [number, number, number, number][] = []; // x, z, yaw, colour index
     const span = 16;
@@ -268,7 +269,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
   }
 
   // marker flags every ~30 m, both sides, red/white alternating
-  {
+  if (!stadium) {
     const poleG = new THREE.CylinderGeometry(0.05, 0.05, 2.2, 5); poleG.translate(0, 1.1, 0);
     const flagG = new THREE.PlaneGeometry(0.6, 0.4); flagG.translate(0.3, 1.95, 0);
     const g = mergeGeometries([poleG.toNonIndexed(), flagG.toNonIndexed()])!;
@@ -340,11 +341,14 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     a.rotation.y = Math.atan2(s.tx, s.tz);
     group.add(a);
   }
-  arch(startK, "START", "#d32f2f");
-  arch(finishK, "FINISH", "#d32f2f", 7);
   const gates: number[] = [];
+  if (loop) arch(startK, "START · FINISH", "#d32f2f", 7);
+  else {
+    arch(startK, "START", "#d32f2f");
+    arch(finishK, "FINISH", "#d32f2f", 7);
+  }
   const gateEvery = Math.round(230 / terrain.step);
-  for (let k = startK + gateEvery; k < finishK - gateEvery * 0.6; k += gateEvery) {
+  for (let k = startK + gateEvery; !loop && k < finishK - gateEvery * 0.6; k += gateEvery) {
     gates.push(k);
     arch(k, `CHECKPOINT ${gates.length}`, "#1e3a5f", 5);
   }
@@ -355,7 +359,7 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     const flagG = new THREE.PlaneGeometry(1.1, 0.7); flagG.translate(0.55, 3.2, 0);
     const flag = new THREE.InstancedMesh(flagG, new THREE.MeshBasicMaterial({ map: checkerTex(), side: THREE.DoubleSide }), 16);
     let n = 0;
-    for (const kk of [startK, finishK]) for (let i = -3; i <= 4; i += 2) for (const side of [1, -1]) {
+    for (const kk of loop ? [startK] : [startK, finishK]) for (let i = -3; i <= 4; i += 2) for (const side of [1, -1]) {
       if (n >= 16) break;
       const s = terrain.sample(kk + i * 6);
       const x = s.x + s.tz * side * (W + 3.6), z = s.z - s.tx * side * (W + 3.6);
@@ -373,6 +377,8 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
     group.add(pole, flag);
   }
 
+  if (stadium) buildStadium(group, terrain, rnd);
+
   return {
     group, terrain, boulders, knocks, startK, finishK, gates,
     dispose() {
@@ -384,4 +390,145 @@ export function buildWorld(biome: Biome, seed0 = 1): World {
       });
     },
   };
+}
+
+// ---------------- stadium: walls, grandstands, crowd, floodlights ----------------
+function buildStadium(group: THREE.Group, terrain: Terrain, rnd: () => number) {
+  const W = terrain.routeW, cnt = terrain.count;
+  const wrapDk = (a: number, b: number) => { const d = Math.abs(a - b) % cnt; return Math.min(d, cnt - d); };
+  // concrete walls hugging both edges of the track, with red/white caps
+  {
+    const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+    const every = 4, off = W + 1.9;
+    const max = Math.ceil(cnt / every) * 2 + 4;
+    const wall = new THREE.InstancedMesh(box, flat(0x9da3ab), max);
+    const capR = new THREE.InstancedMesh(box, flat(0xd32f2f), max);
+    const capW = new THREE.InstancedMesh(box, flat(0xf2f2f2), max);
+    let nw = 0, nr = 0, nc = 0;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    const pt = (k: number, side: number) => { const s = terrain.sample(k); return [s.x + s.tz * side * off, s.z - s.tx * side * off] as const; };
+    for (const side of [1, -1]) for (let k = 0; k < cnt; k += every) {
+      const [x0, z0] = pt(k, side), [x1, z1] = pt(k + every, side);
+      const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+      if (wrapDk(terrain.nearest(mx, mz, k).k, k) > 30) continue; // another part of the track is closer
+      const len = Math.hypot(x1 - x0, z1 - z0) + 0.15;
+      const s = terrain.sample(k);
+      const top = Math.max(terrain.height(mx, mz), s.y + terrain.featureAt(k * terrain.step)) + 1.0;
+      const bot = terrain.height(mx, mz) - 0.4;
+      q.setFromAxisAngle(up, Math.atan2(x1 - x0, z1 - z0));
+      m.compose(new THREE.Vector3(mx, bot, mz), q, new THREE.Vector3(0.6, top - bot - 0.18, len));
+      wall.setMatrixAt(nw++, m);
+      m.compose(new THREE.Vector3(mx, top - 0.18, mz), q, new THREE.Vector3(0.64, 0.18, len));
+      if ((k / every) % 2) capR.setMatrixAt(nr++, m); else capW.setMatrixAt(nc++, m);
+    }
+    wall.count = nw; capR.count = nr; capW.count = nc;
+    wall.castShadow = wall.receiveShadow = true;
+    group.add(wall, capR, capW);
+  }
+
+  // the bowl: a rounded rectangle of grandstands around the whole track
+  let ax = 0, az = 0;
+  for (const s of terrain.samples) { ax = Math.max(ax, Math.abs(s.x)); az = Math.max(az, Math.abs(s.z)); }
+  ax += W + 16; az += W + 16;
+  const SEG = 140;
+  const ring: { x: number; z: number; nx: number; nz: number; len: number; yaw: number }[] = [];
+  const P = (t: number): [number, number] => {
+    const c = Math.cos(t), s = Math.sin(t);
+    return [ax * Math.sign(c) * Math.abs(c) ** 0.45, az * Math.sign(s) * Math.abs(s) ** 0.45];
+  };
+  for (let i = 0; i < SEG; i++) {
+    const [x0, z0] = P((i / SEG) * Math.PI * 2), [x1, z1] = P(((i + 1) / SEG) * Math.PI * 2);
+    const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz);
+    // outward normal (the loop runs anticlockwise in x/z)
+    ring.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, nx: dz / len, nz: -dx / len, len, yaw: Math.atan2(dx, dz) });
+  }
+  const ROWS = 9, DEPTH = 1.3, RISE = 0.85;
+  const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+  const tiers = new THREE.InstancedMesh(box, flat(0x3a3f4a), SEG * (ROWS + 2));
+  const fence = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ map: hoardTex() }), SEG);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), v = new THREE.Vector3(), sc = new THREE.Vector3();
+  let nt = 0, nf = 0;
+  for (const r of ring) {
+    q.setFromAxisAngle(up, r.yaw);
+    // ad boards along the foot of the stands
+    m.compose(v.set(r.x, -0.2, r.z), q, sc.set(0.4, 2.4, r.len + 0.3)); fence.setMatrixAt(nf++, m);
+    for (let row = 0; row < ROWS; row++) {
+      const o = 3 + row * DEPTH;
+      m.compose(v.set(r.x + r.nx * o, -0.2, r.z + r.nz * o), q, sc.set(DEPTH + 0.02, 1.2 + row * RISE, r.len * (1 + o / 140) + 0.4));
+      tiers.setMatrixAt(nt++, m);
+    }
+    // back wall and roof edge
+    const ob = 3 + ROWS * DEPTH + 0.4;
+    m.compose(v.set(r.x + r.nx * ob, -0.2, r.z + r.nz * ob), q, sc.set(0.8, 1.2 + ROWS * RISE + 3.5, r.len * (1 + ob / 140) + 0.6));
+    tiers.setMatrixAt(nt++, m);
+  }
+  tiers.count = nt; fence.count = nf;
+  tiers.receiveShadow = true;
+  group.add(tiers, fence);
+
+  // the crowd: one little block per fan, in team colours
+  {
+    const fan = new THREE.BoxGeometry(0.5, 0.75, 0.42); fan.translate(0, 0.37, 0);
+    const head = new THREE.BoxGeometry(0.3, 0.3, 0.3); head.translate(0, 0.92, 0);
+    const g = mergeGeometries([fan.toNonIndexed(), head.toNonIndexed()])!;
+    const shirts = [0xd32f2f, 0xf5f5f5, 0x1e5bd8, 0xf2c200, 0x2e9e4f, 0xf57c00, 0x222222, 0xd32f2f, 0xffffff];
+    const spots: [number, number, number, number, number][] = [];
+    for (const r of ring) for (let row = 0; row < ROWS; row++) {
+      const o = 3 + row * DEPTH + DEPTH * 0.55;
+      const l = r.len * (1 + o / 140);
+      for (let a = -l / 2 + 0.4; a < l / 2 - 0.3; a += 0.8) {
+        if (rnd() < 0.12) continue;
+        const tx = Math.sin(r.yaw), tz = Math.cos(r.yaw);
+        spots.push([r.x + r.nx * o + tx * a, 1.0 + row * RISE - 0.2, r.z + r.nz * o + tz * a, r.yaw, shirts[Math.floor(rnd() * shirts.length)]]);
+      }
+    }
+    const crowd = new THREE.InstancedMesh(g, new THREE.MeshLambertMaterial({ color: 0xffffff }), spots.length);
+    const c = new THREE.Color();
+    spots.forEach(([x, y, z, yaw, col], i) => {
+      q.setFromAxisAngle(up, yaw + Math.PI / 2 + (rnd() - 0.5) * 0.4);
+      const s = 0.85 + rnd() * 0.3;
+      m.compose(v.set(x, y, z), q, sc.set(s, s, s));
+      crowd.setMatrixAt(i, m);
+      crowd.setColorAt(i, c.setHex(col).multiplyScalar(0.75 + rnd() * 0.35));
+    });
+    group.add(crowd);
+  }
+
+  // floodlight towers at the corners and halfway down each side
+  {
+    const pole = flat(0x2a2e36);
+    const lampM = new THREE.MeshBasicMaterial({ color: 0xfff8e0 });
+    const glowM = new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.22, depthWrite: false });
+    for (const t of [0.25, 0.75, 1.25, 1.75, 0, 1].map((f) => f * Math.PI)) {
+      const [x, z] = P(t);
+      const l = Math.hypot(x, z), ox = x / l, oz = z / l;
+      const px = x + ox * 20, pz = z + oz * 20, H = 34;
+      const g = new THREE.Group();
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, H, 6), pole); p.position.y = H / 2; g.add(p);
+      const panel = new THREE.Group();
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(7, 4, 0.5), pole); panel.add(frame);
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) {
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.9, 0.2), lampM);
+        lamp.position.set(-2.4 + i * 1.6, -1.2 + j * 1.2, 0.3); panel.add(lamp);
+      }
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(6, 10, 8), glowM); glow.position.z = 1.2; panel.add(glow);
+      panel.position.y = H + 1;
+      panel.rotation.x = 0.45;
+      g.add(panel);
+      g.position.set(px, -0.2, pz);
+      g.rotation.y = Math.atan2(-ox, -oz);
+      group.add(g);
+    }
+  }
+}
+
+function hoardTex() {
+  return canvasTex(512, 64, (g) => {
+    const cols = ["#d32f2f", "#111", "#f5f5f5", "#1e3a5f"];
+    for (let i = 0; i < 4; i++) {
+      g.fillStyle = cols[i]; g.fillRect(i * 128, 0, 128, 64);
+      g.fillStyle = i === 2 ? "#d32f2f" : "#fff"; g.font = "900 26px Arial"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(["THUNDER", "BOWL", "DUST", "RUNNER"][i], i * 128 + 64, 34);
+    }
+  });
 }

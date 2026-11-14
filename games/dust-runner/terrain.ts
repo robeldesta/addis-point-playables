@@ -70,9 +70,10 @@ export class Terrain {
   private buildRoute() {
     const ctrl = this.biome.route.map(([x, z]) => [x * 1.25, z * 1.25] as [number, number]);
     const K = ctrl.length;
-    const P = (i: number) => ctrl[Math.max(0, Math.min(K - 1, i))];
+    const loop = !!this.biome.loop;
+    const P = (i: number) => loop ? ctrl[((i % K) + K) % K] : ctrl[Math.max(0, Math.min(K - 1, i))];
     const dense: [number, number][] = [];
-    for (let i = 0; i < K - 1; i++) {
+    for (let i = 0; i < (loop ? K : K - 1); i++) {
       const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
       for (let j = 0; j < 60; j++) {
         const t = j / 60, t2 = t * t, t3 = t2 * t;
@@ -81,14 +82,14 @@ export class Terrain {
         dense.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
       }
     }
-    dense.push(ctrl[K - 1]);
+    dense.push(loop ? ctrl[0] : ctrl[K - 1]);
     const cum = [0];
     for (let i = 1; i < dense.length; i++) cum.push(cum[i - 1] + Math.hypot(dense[i][0] - dense[i - 1][0], dense[i][1] - dense[i - 1][1]));
     const total = cum[cum.length - 1];
     const n = Math.floor(total / STEP);
     this.length = n * STEP;
     let seg = 0;
-    for (let k = 0; k <= n; k++) {
+    for (let k = 0; k < (loop ? n : n + 1); k++) {
       const s = Math.min(total, k * STEP);
       while (seg < dense.length - 2 && cum[seg + 1] < s) seg++;
       const a = dense[seg], b = dense[seg + 1];
@@ -97,7 +98,7 @@ export class Terrain {
     }
     const m = this.samples.length;
     for (let k = 0; k < m; k++) {
-      const a = this.samples[Math.max(0, k - 2)], b = this.samples[Math.min(m - 1, k + 2)];
+      const a = this.sample(k - 2), b = this.sample(k + 2);
       const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
       this.samples[k].tx = (b.x - a.x) / l;
       this.samples[k].tz = (b.z - a.z) / l;
@@ -107,7 +108,7 @@ export class Terrain {
     const W = Math.max(1, Math.round(this.biome.follow / STEP));
     for (let k = 0; k < m; k++) {
       let acc = 0, c = 0;
-      for (let j = k - W; j <= k + W; j += 2) { acc += raw[Math.max(0, Math.min(m - 1, j))]; c++; }
+      for (let j = k - W; j <= k + W; j += 2) { acc += raw[loop ? ((j % m) + m) % m : Math.max(0, Math.min(m - 1, j))]; c++; }
       this.samples[k].y = acc / c - this.biome.sink;
     }
     for (const [kind, frac, len] of this.biome.features) this.features.push({ kind, at: frac * this.length, len });
@@ -216,7 +217,11 @@ export class Terrain {
     return { k: bk, d: Math.sqrt(best) };
   }
 
-  sample(k: number): Sample { return this.samples[Math.max(0, Math.min(this.samples.length - 1, Math.round(k)))]; }
+  sample(k: number): Sample {
+    const n = this.samples.length, i = Math.round(k);
+    return this.samples[this.biome.loop ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))];
+  }
+  get loop() { return !!this.biome.loop; }
   get count() { return this.samples.length; }
   get step() { return STEP; }
 }
