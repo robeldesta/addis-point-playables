@@ -79,7 +79,7 @@
       #prog i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #ffd54f, #ff7a2f); }
       @media (orientation: portrait) { #prog { top: calc(max(12px, env(safe-area-inset-top)) + 52px); } }
       #stagelist { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; width: min(640px, 94vw); margin-top: 14px; }
-      .stage { position: relative; text-align: left; border: 0; border-radius: 14px; padding: 9px 12px; background: #fff; color: #3a2210; cursor: pointer;
+      .stage { position: relative; text-align: left; border: 0; border-left: 8px solid var(--c, #c97); border-radius: 14px; padding: 9px 12px; background: #fff; color: #3a2210; cursor: pointer;
         box-shadow: 0 4px 0 rgba(0,0,0,.2); font-family: Arial; }
       .stage b { display: block; font-size: 15px; padding-right: 26px; }
       .stage small { display: block; font-size: 11.5px; color: #8a6a50; margin-top: 2px; font-weight: 700; }
@@ -142,13 +142,13 @@
       <div class="tag">Long-travel trophy truck. Open desert. Big air.</div>
       <div id="stagelist"></div>
       <div class="medals" id="medals"></div>
-      <button class="btn alt" id="free">Free roam</button>
-      <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake, F for focus<br>Big air fills FOCUS: slow time to line up landings. Off the road, the clock runs double.</div>
+      <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake, F for focus<br>Big air fills FOCUS: slow time to line up landings. Stay near the route: far off it, the clock runs double.</div>
     </div>
     <div class="screen" id="results">
       <div class="card">
         <div class="medal" id="rmedal"></div>
         <h2 id="rtitle"></h2>
+        <div class="rsub" id="rplace"></div>
         <div class="rtime" id="rtime"></div>
         <div class="rsub" id="rpen"></div>
         <div class="rsub strong" id="rbest"></div>
