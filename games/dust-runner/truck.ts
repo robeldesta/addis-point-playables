@@ -32,6 +32,8 @@ export const SPEC = {
   steerFade: 300,     // how quickly lock is reduced with speed (bigger = keeps more lock)
   steerRate: 2.6,     // how fast the wheels turn (rad/s)
   grip: 1.05,        // tyre grip multiplier
+  tyreB: 12,         // tyre stiffness: higher = grips at a smaller slip angle
+  tyreC: 1.45,       // tyre shape: higher = more grip lost once sliding
   frontGrip: 1,      // front tyre grip: >1 turns in harder
   rearGrip: 1.04,    // rear tyre grip: keep it at or above frontGrip or the tail steps out
   tc: 0.9,           // share of rear grip the throttle may use (traction control)
@@ -236,7 +238,7 @@ export class Truck {
       _v.crossVectors(this.ang, _r).add(this.vel);
       const vl = _v.dot(_f), vs = _v.dot(_s);
       const onRoad = T.nearest(w.contact.x, w.contact.z).d < 8;
-      const mu = (onRoad ? 1.12 : 0.92) * S.grip * (w.front ? S.frontGrip : S.rearGrip);
+      const mu = (onRoad ? 1.12 : 1.0) * S.grip * (w.front ? S.frontGrip : S.rearGrip);
       const maxF = mu * Math.min(N, 11000);
 
       let Fl = 0;
@@ -257,7 +259,7 @@ export class Truck {
       if (Math.abs(Fl) > maxF) { ws = (Math.abs(Fl) - maxF) / Math.max(1, maxF); Fl = Math.sign(Fl) * maxF; }
       latScale *= Math.max(0.72, Math.sqrt(Math.max(0, 1 - (Fl / Math.max(1, maxF)) ** 2)));
       const alpha = Math.atan2(vs, Math.max(Math.abs(vl), 2.5));
-      const Fs = -maxF * latScale * Math.sin(1.45 * Math.atan(7 * alpha));
+      const Fs = -maxF * latScale * Math.sin(S.tyreC * Math.atan(S.tyreB * alpha));
       w.slip = Math.abs(vs) * 0.5 + ws * 6 + (inp.handbrake && !w.front ? Math.abs(vl) * 0.3 : 0);
       if (!w.front) spin += ws;
 
