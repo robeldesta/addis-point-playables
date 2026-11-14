@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { SPEC, type Spec } from "./truck";
 
 // The garage: trucks you can own and the four upgrade lines for each.
@@ -21,7 +22,7 @@ export interface TruckDef {
   livery: number;
   price: number;
   priceMul: number; // upgrades cost more on better trucks
-  base: Partial<Omit<Spec, "inertia">>;
+  base: Partial<Spec>;
 }
 
 export const TRUCKS: TruckDef[] = [
@@ -33,28 +34,39 @@ export const TRUCKS: TruckDef[] = [
   {
     id: "sidewinder", name: "Sidewinder", number: "27", livery: 0x1565c0, price: 3500, priceMul: 1.4,
     blurb: "Real race truck. More power and travel, wider stance.",
-    base: { mass: 1800, power: 470000, maxDrive: 19500, rest: 0.9, bump: 0.82, k: 16500, damp: 2200, rebound: 3000, arb: 8800, grip: 1.07, assist: 1.25, lift: 0.62 },
+    base: { mass: 1800, power: 470000, maxDrive: 19500, rest: 0.9, bump: 0.82, k: 14500, k3: 26000, damp: 2200, rebound: 4200, bypass: 2, hbump: 50000,
+      arb: 8800, grip: 1.1, frontGrip: 1.04, assist: 1.25, lift: 0.62, maxSteer: 0.68, steerFade: 400, steerRate: 3.1, inertia: new THREE.Vector3(4400, 4400, 1600) },
   },
   {
     id: "apex", name: "Apex Unlimited", number: "1", livery: 0x15171b, price: 9000, priceMul: 2,
     blurb: "Top class. Huge power, huge travel, glued to the ground.",
-    base: { mass: 1750, power: 580000, maxDrive: 22000, rest: 0.98, bump: 0.9, k: 17500, damp: 2500, rebound: 3300, arb: 10500, grip: 1.14, assist: 1.5, lift: 0.68, yawDamp: 1.15 },
+    base: { mass: 1750, power: 580000, maxDrive: 22000, rest: 0.98, bump: 0.9, k: 13000, k3: 10000, damp: 1900, rebound: 6000, bypass: 2.4, hbump: 90000,
+      arb: 10500, grip: 1.2, frontGrip: 1.08, assist: 1.5, lift: 0.68, yawDamp: 1.15, maxSteer: 0.74, steerFade: 520, steerRate: 3.6, inertia: new THREE.Vector3(5200, 4500, 1700) },
   },
 ];
 
 export type Levels = [number, number, number, number];
 
 export function buildSpec(def: TruckDef, lv: Levels): Spec {
-  const s: Spec = { ...SPEC, inertia: SPEC.inertia.clone(), ...def.base } as Spec;
+  const s: Spec = { ...SPEC, ...def.base } as Spec;
+  s.inertia = (def.base.inertia ?? SPEC.inertia).clone();
   const [e, su, t, st] = lv;
   s.power *= 1 + 0.11 * e;
   s.maxDrive *= 1 + 0.07 * e;
   s.rest += 0.035 * su;
   s.bump += 0.035 * su;
-  s.damp *= 1 + 0.09 * su;
-  s.rebound *= 1 + 0.09 * su;
-  s.k *= 1 + 0.03 * su;
-  s.grip *= 1 + 0.045 * t;
+  // race shocks: more rebound control, bigger bypass zones, hydraulic bump
+  // stops, and less of the pogo-stick progressive spring
+  s.damp *= 1 + 0.06 * su;
+  s.rebound += 900 * su;
+  s.bypass += 0.6 * su;
+  s.hbump += 15000 * su;
+  s.k3 *= 1 - 0.18 * su;
+  s.inertia.x *= 1 + 0.05 * su; // centralised mass: the body pitches less
+  s.grip *= 1 + 0.06 * t;
+  s.frontGrip += 0.02 * t;
+  s.maxSteer += 0.02 * t;
+  s.steerFade += 40 * t;
   s.arb *= 1 + 0.14 * st;
   s.assist *= 1 + 0.22 * st;
   s.lift = Math.min(0.9, s.lift + 0.05 * st);
@@ -67,8 +79,8 @@ export function rate(s: Spec) {
   const pct = (v: number, a: number, b: number) => Math.round(Math.max(4, Math.min(100, ((v - a) / (b - a)) * 100)));
   return {
     power: pct(s.power / s.mass, 170, 520),
-    susp: pct(s.bump + s.damp / 20000, 0.8, 1.25),
-    grip: pct(s.grip, 0.95, 1.38),
+    susp: pct(s.bump + s.rebound / 20000 + s.bypass / 20 - s.k3 / 200000, 0.45, 1.65),
+    grip: pct(s.grip * (1 + (s.frontGrip - 1) * 0.5) + s.maxSteer * 0.3, 1.13, 1.85),
     stab: pct(s.assist * 0.5 + (s.lift - 0.5) * 2 + s.arb / 30000, 0.85, 2.55),
   };
 }

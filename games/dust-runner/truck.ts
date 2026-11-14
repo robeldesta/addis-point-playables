@@ -17,15 +17,22 @@ export const SPEC = {
   bump: 0.74,         // compression where the bump stop starts
   k: 15500,
   k3: 52000,
-  damp: 1900,
-  rebound: 2700,
+  damp: 1900,        // compression damping near ride height (N per m/s)
+  rebound: 2700,     // rebound damping
+  bypass: 0.5,       // how much firmer compression gets deep in the stroke
+  hbump: 15000,      // hydraulic bump stop strength (N per m/s)
+  knee: 1.2,         // shaft speed (m/s) where high-speed damping takes over
+  blow: 0.45,        // high-speed damping as a fraction of low-speed
   arb: 7000,
   power: 390000,
   maxDrive: 17500,
   brake: 9000,
   drag: 3.0,
-  maxSteer: 0.6,
-  grip: 1,           // tyre grip multiplier
+  maxSteer: 0.62,     // full front-wheel lock at walking pace (rad)
+  steerFade: 300,     // how quickly lock is reduced with speed (bigger = keeps more lock)
+  steerRate: 2.6,     // how fast the wheels turn (rad/s)
+  grip: 1.05,        // tyre grip multiplier
+  frontGrip: 1,      // extra front grip: >1 turns in harder, less understeer
   assist: 1,         // strength of the in-air levelling assist
   lift: 0.55,        // where tyre forces act, 0 = road, 1 = centre of mass (higher = harder to roll over)
   yawDamp: 1,        // how strongly slides are calmed
@@ -110,6 +117,34 @@ export class Truck {
     this.torque.add(_tmp);
   }
 
+  /**
+   * Damper force for one corner, modelled on a race coilover + bypass shock:
+   * - compression (cv > 0) is soft around ride height and firms up through the
+   *   bypass zones deeper in the stroke, then a hydraulic bump stop takes the
+   *   last part of the travel as pure damping (no spring to throw the truck back);
+   * - rebound (cv < 0) is much stiffer than compression so the body does not
+   *   pogo after a landing, and firms again near full droop so wheels don't slam out;
+   * - both are digressive: force grows slower at high shaft speeds, so sharp
+   *   hits are absorbed instead of passed straight into the body.
+   */
+  private shock(c: number, cv: number): number {
+    const S = this.spec;
+    const x = c / S.bump; // 0 = full droop, 1 = on the bump stop
+    const v = Math.abs(cv), knee = S.knee;
+    const vEff = v < knee ? v : knee + (v - knee) * S.blow;
+    if (cv > 0) {
+      const zone = 1 + S.bypass * x * x;                        // bypass zones firm up with depth
+      const hbs = S.hbump * Math.max(0, (x - 0.82) / 0.18) ** 2; // hydraulic bump stop: last ~18 %
+      return S.damp * zone * vEff + hbs * v;
+    }
+    // rebound: the bypass tubes also hold the truck back on the way up from deep in
+    // the stroke, so a big landing doesn't spring the truck back into the air
+    const zone = 1 + 0.6 * S.bypass * x * x;
+    const top = 1 + 1.5 * Math.max(0, (0.25 - x) / 0.25);        // top-out zone
+    const vr = v < knee ? v : knee + (v - knee) * 0.8;
+    return -S.rebound * zone * top * vr;
+  }
+
   step(dt: number, inp: Input, T: Terrain) {
     const S = this.spec;
     const up = _up.set(0, 1, 0).applyQuaternion(this.q);
@@ -125,9 +160,9 @@ export class Truck {
     const aspd = Math.abs(speed);
 
     // steering: less lock at speed, finite steering rate
-    const lock = S.maxSteer * (0.28 + 0.72 / (1 + aspd * aspd / 260));
+    const lock = S.maxSteer * (0.4 + 0.6 / (1 + aspd * aspd / S.steerFade));
     const target = inp.steer * lock;
-    const rate = Math.abs(target) < Math.abs(this.steer) ? 3.2 : 2.2;
+    const rate = (Math.abs(target) < Math.abs(this.steer) ? 1.4 : 1) * S.steerRate;
     this.steer += Math.max(-rate * dt, Math.min(rate * dt, target - this.steer));
 
     // drive
@@ -172,9 +207,14 @@ export class Truck {
       const c = w.comp;
       let cv = (c - w.prevComp) / dt;
       if (!(w.prevComp > 0)) cv = Math.min(cv, 6);
-      cv = Math.max(-8, Math.min(8, cv));
-      let N = S.k * c + S.k3 * c * c * c + (cv > 0 ? S.damp : S.rebound) * cv;
-      if (c > S.bump) { N += 260000 * (c - S.bump) + 16000 * Math.max(0, cv); this.bottomOut = Math.max(this.bottomOut, cv); }
+      cv = Math.max(-12, Math.min(12, cv));
+      let N = S.k * c + S.k3 * c * c * c + this.shock(c, cv);
+      if (c > S.bump) {
+        // past the bump stop: a stiff limit that gives back little of what it takes
+        const lim = 260000 * (c - S.bump);
+        N += cv > 0 ? lim + 30000 * cv : lim * 0.25;
+        this.bottomOut = Math.max(this.bottomOut, cv);
+      }
       N += (i === 0 ? arbF : i === 1 ? -arbF : i === 2 ? arbR : -arbR);
       N = Math.max(0, N);
       w.load = N;
@@ -193,7 +233,7 @@ export class Truck {
       _v.crossVectors(this.ang, _r).add(this.vel);
       const vl = _v.dot(_f), vs = _v.dot(_s);
       const onRoad = T.nearest(w.contact.x, w.contact.z).d < 8;
-      const mu = (onRoad ? 1.12 : 0.92) * S.grip;
+      const mu = (onRoad ? 1.12 : 0.92) * S.grip * (w.front ? S.frontGrip : 1);
       const maxF = mu * Math.min(N, 11000);
 
       let Fl = 0;
