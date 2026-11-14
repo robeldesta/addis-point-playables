@@ -1,44 +1,32 @@
-// Desert test area: one heightfield shared by physics and rendering.
-// A closed dirt loop runs through rolling dunes, with whoops, rollers,
-// a gap jump, a tabletop and a big kicker placed along it.
+// One heightfield per stage, shared by physics and rendering. A stage is a
+// point-to-point route across open desert; the ground around it is shaped by
+// the stage's biome (flats, dunes, a sunken wash, a canyon, mountain mesas).
+
+import type { Biome } from "./biomes";
 
 export const N = 320;            // cells per side
-export const CELL = 1.25;        // metres per cell
+export const CELL = 1.5;        // metres per cell
 export const HALF = (N * CELL) / 2;
-export const TRACK_HALF_W = 6.5; // half width of the dirt road
-const STEP = 0.5;                // centreline sample spacing (m)
+const STEP = 0.5;                // route sample spacing (m)
 
-const smooth = (a: number, b: number, x: number) => {
+export const smooth = (a: number, b: number, x: number) => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
-function baseHeight(x: number, z: number): number {
-  let h = 2.6 * Math.sin(x * 0.021 + 1.3) * Math.cos(z * 0.017 - 0.4);
-  h += 1.4 * Math.sin((x + z) * 0.033 + 0.7);
-  h += 0.5 * Math.sin(x * 0.09 - z * 0.07);
-  h += 0.25 * Math.sin(x * 0.21 + z * 0.17) * Math.cos(z * 0.13);
-  // wind-blown dune crests
-  const ridge = Math.abs(Math.sin(x * 0.013 + z * 0.021 + Math.sin(z * 0.011) * 2));
-  h += 3.2 * ridge * ridge * ridge;
-  // berm at the edge of the playable area
-  const d = Math.max(Math.abs(x), Math.abs(z));
-  if (d > 168) h += ((d - 168) / 30) ** 2 * 22;
-  return h;
-}
-
-export type FeatureKind = "whoops" | "gap" | "rollers" | "table" | "kicker" | "start";
-interface Feature { kind: FeatureKind; at: number; len: number }
+export type FeatureKind = "whoops" | "bigwhoops" | "rollers" | "table" | "kicker" | "gap" | "crest" | "rocks";
+export interface Feature { kind: FeatureKind; at: number; len: number }
 
 function featureHeight(f: Feature, u: number): number {
   if (u < 0 || u > f.len) return 0;
+  const ramp = Math.min(1, u / 6, (f.len - u) / 6); // ease in/out of wave sections
   switch (f.kind) {
-    case "whoops": { const lam = 9; return 0.42 * (0.5 - 0.5 * Math.cos((2 * Math.PI * u) / lam)); }
-    case "rollers": { const lam = 26; return 1.1 * (0.5 - 0.5 * Math.cos((2 * Math.PI * u) / lam)); }
+    case "whoops": return ramp * 0.55 * (0.5 - 0.5 * Math.cos((2 * Math.PI * u) / 9));
+    case "bigwhoops": return ramp * 0.95 * (0.5 - 0.5 * Math.cos((2 * Math.PI * u) / 13));
+    case "rollers": return ramp * 1.3 * (0.5 - 0.5 * Math.cos((2 * Math.PI * u) / 28));
     case "gap": {
-      // kicker 2.4 m high, a dip, then a downhill landing ramp
       if (u < 13) return 2.4 * (u / 13) ** 1.6;
-      if (u < 15.5) return 2.4 - (2.4 + 0.5) * smooth(13, 15.5, u);
+      if (u < 15.5) return 2.4 - 2.9 * smooth(13, 15.5, u);
       if (u < 22) return -0.5;
       if (u < 28) return -0.5 + 2.3 * smooth(22, 28, u);
       return 1.8 * (1 - smooth(28, f.len, u));
@@ -51,6 +39,10 @@ function featureHeight(f: Feature, u: number): number {
     case "kicker": {
       if (u < 15) return 3.0 * (u / 15) ** 1.35;
       return 3.0 * (1 - smooth(15, f.len, u));
+    }
+    case "crest": { // sharp dune lip with a long soft landing
+      if (u < 18) return 3.6 * (u / 18) ** 1.25;
+      return 3.6 * (1 - smooth(18, f.len, u)) ** 0.8;
     }
     default: return 0;
   }
@@ -65,25 +57,23 @@ export class Terrain {
   readonly samples: Sample[] = [];
   readonly features: Feature[] = [];
   length = 0;
+  readonly routeW: number;
+  readonly offRoute: number;
 
-  constructor() {
-    this.buildTrack();
+  constructor(readonly biome: Biome) {
+    this.routeW = biome.routeW;
+    this.offRoute = biome.routeW + 14;
+    this.buildRoute();
     this.buildHeights();
   }
 
-  private buildTrack() {
-    // control points of a lumpy closed loop
-    const ctrl: [number, number][] = [];
-    const K = 22;
-    for (let i = 0; i < K; i++) {
-      const a = (i / K) * Math.PI * 2;
-      const r = 128 + 30 * Math.sin(2 * a + 0.4) + 16 * Math.cos(3 * a + 1.0);
-      ctrl.push([Math.cos(a) * r, Math.sin(a) * r * 0.92]);
-    }
-    // closed Catmull-Rom, densely evaluated
+  private buildRoute() {
+    const ctrl = this.biome.route.map(([x, z]) => [x * 1.25, z * 1.25] as [number, number]);
+    const K = ctrl.length;
+    const P = (i: number) => ctrl[Math.max(0, Math.min(K - 1, i))];
     const dense: [number, number][] = [];
-    for (let i = 0; i < K; i++) {
-      const p0 = ctrl[(i - 1 + K) % K], p1 = ctrl[i], p2 = ctrl[(i + 1) % K], p3 = ctrl[(i + 2) % K];
+    for (let i = 0; i < K - 1; i++) {
+      const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
       for (let j = 0; j < 60; j++) {
         const t = j / 60, t2 = t * t, t3 = t2 * t;
         const f = (a: number, b: number, c: number, d: number) =>
@@ -91,51 +81,38 @@ export class Terrain {
         dense.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
       }
     }
-    // resample at an even spacing
+    dense.push(ctrl[K - 1]);
     const cum = [0];
-    for (let i = 1; i <= dense.length; i++) {
-      const a = dense[i - 1], b = dense[i % dense.length];
-      cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
-    }
+    for (let i = 1; i < dense.length; i++) cum.push(cum[i - 1] + Math.hypot(dense[i][0] - dense[i - 1][0], dense[i][1] - dense[i - 1][1]));
     const total = cum[cum.length - 1];
     const n = Math.floor(total / STEP);
     this.length = n * STEP;
     let seg = 0;
-    for (let k = 0; k < n; k++) {
-      const s = (k / n) * total;
-      while (cum[seg + 1] < s) seg++;
-      const a = dense[seg], b = dense[(seg + 1) % dense.length];
-      const t = (s - cum[seg]) / (cum[seg + 1] - cum[seg]);
+    for (let k = 0; k <= n; k++) {
+      const s = Math.min(total, k * STEP);
+      while (seg < dense.length - 2 && cum[seg + 1] < s) seg++;
+      const a = dense[seg], b = dense[seg + 1];
+      const t = (s - cum[seg]) / Math.max(1e-6, cum[seg + 1] - cum[seg]);
       this.samples.push({ x: a[0] + (b[0] - a[0]) * t, z: a[1] + (b[1] - a[1]) * t, tx: 0, tz: 0, y: 0 });
     }
-    for (let k = 0; k < n; k++) {
-      const a = this.samples[(k - 2 + n) % n], b = this.samples[(k + 2) % n];
+    const m = this.samples.length;
+    for (let k = 0; k < m; k++) {
+      const a = this.samples[Math.max(0, k - 2)], b = this.samples[Math.min(m - 1, k + 2)];
       const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
       this.samples[k].tx = (b.x - a.x) / l;
       this.samples[k].tz = (b.z - a.z) / l;
     }
-    // road height follows the dunes, heavily smoothed
-    const raw = this.samples.map((p) => baseHeight(p.x, p.z));
-    const W = Math.round(40 / STEP);
-    let acc = 0;
-    for (let k = -W; k <= W; k++) acc += raw[(k + n) % n];
-    for (let k = 0; k < n; k++) {
-      this.samples[k].y = acc / (2 * W + 1) - 0.4;
-      acc += raw[(k + W + 1) % n] - raw[(k - W + n) % n];
+    // route height: the ground, smoothed over the biome's window, then carved
+    const raw = this.samples.map((p) => this.biome.base(p.x, p.z));
+    const W = Math.max(1, Math.round(this.biome.follow / STEP));
+    for (let k = 0; k < m; k++) {
+      let acc = 0, c = 0;
+      for (let j = k - W; j <= k + W; j += 2) { acc += raw[Math.max(0, Math.min(m - 1, j))]; c++; }
+      this.samples[k].y = acc / c - this.biome.sink;
     }
-    // features, spread around the lap
-    const L = this.length;
-    const put = (kind: FeatureKind, frac: number, len: number) => this.features.push({ kind, at: frac * L, len });
-    put("whoops", 0.07, 75);
-    put("gap", 0.2, 46);
-    put("rollers", 0.33, 88);
-    put("table", 0.48, 62);
-    put("whoops", 0.62, 68);
-    put("kicker", 0.76, 55);
-    put("rollers", 0.88, 66);
+    for (const [kind, frac, len] of this.biome.features) this.features.push({ kind, at: frac * this.length, len });
   }
 
-  /** feature bump at a distance along the track */
   featureAt(s: number): number {
     let h = 0;
     for (const f of this.features) h += featureHeight(f, s - f.at);
@@ -143,9 +120,10 @@ export class Terrain {
   }
 
   private buildHeights() {
-    const R = TRACK_HALF_W + 12;
+    const B = this.biome;
+    const wall = B.wall;           // distance over which the surroundings blend back in
+    const R = this.routeW + wall + 4;
     const rc = Math.ceil(R / CELL);
-    // stamp nearest centreline sample into the grid
     for (let k = 0; k < this.samples.length; k++) {
       const p = this.samples[k];
       const ci = Math.round((p.x + HALF) / CELL), cj = Math.round((p.z + HALF) / CELL);
@@ -158,27 +136,31 @@ export class Terrain {
         }
       }
     }
+    const W = this.routeW;
     for (let j = 0; j <= N; j++) {
       for (let i = 0; i <= N; i++) {
         const idx = j * (N + 1) + i;
         const x = i * CELL - HALF, z = j * CELL - HALF;
-        let h = baseHeight(x, z);
+        let h = B.base(x, z);
+        // keep the truck inside the map
+        const e = Math.max(Math.abs(x), Math.abs(z));
+        if (e > HALF - 28) h += ((e - HALF + 28) / 28) ** 2 * 26;
         const k = this.near[idx];
         if (k >= 0) {
           const d = this.dist[idx];
           const p = this.samples[k];
-          const fade = 1 - smooth(TRACK_HALF_W - 1, TRACK_HALF_W + 2.5, d);
-          const berm = 0.45 * Math.exp(-(((d - (TRACK_HALF_W + 1.8)) / 1.1) ** 2));
-          const surf = p.y + this.featureAt(k * STEP) * fade + berm;
-          const w = 1 - smooth(TRACK_HALF_W + 2.5, TRACK_HALF_W + 12, d);
-          h = h + (surf - h) * w;
+          const fade = 1 - smooth(W - 1.5, W + 3, d);
+          // light washboard texture on the driven line
+          const rough = 0.06 * Math.sin(k * STEP * 1.9) * (1 - smooth(0, W, d));
+          const surf = p.y + this.featureAt(k * STEP) * fade + rough;
+          const w = smooth(W + 2, W + 2 + wall, d);
+          h = surf + (h - surf) * w;
         }
         this.h[idx] = h;
       }
     }
   }
 
-  /** exact height of the rendered triangles */
   height(x: number, z: number): number {
     let gx = (x + HALF) / CELL, gz = (z + HALF) / CELL;
     gx = Math.max(0, Math.min(N - 1e-4, gx));
@@ -191,7 +173,6 @@ export class Terrain {
     return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
   }
 
-  /** smoothed normal (central differences) */
   normal(x: number, z: number, out: { x: number; y: number; z: number }) {
     const e = 0.7;
     const dx = this.height(x + e, z) - this.height(x - e, z);
@@ -202,7 +183,6 @@ export class Terrain {
     return out;
   }
 
-  /** ray march + bisection. returns t or -1 */
   raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxT: number): number {
     const f = (t: number) => oy + dy * t - this.height(ox + dx * t, oz + dz * t);
     if (f(0) <= 0) return 0;
@@ -220,7 +200,7 @@ export class Terrain {
     return -1;
   }
 
-  /** nearest centreline sample index, and distance from the road centre */
+  /** nearest route sample index, and distance from the route centre */
   nearest(x: number, z: number, hint = -1): { k: number; d: number } {
     const i = Math.round((x + HALF) / CELL), j = Math.round((z + HALF) / CELL);
     if (i >= 0 && j >= 0 && i <= N && j <= N) {
@@ -236,7 +216,7 @@ export class Terrain {
     return { k: bk, d: Math.sqrt(best) };
   }
 
-  sample(k: number): Sample { const n = this.samples.length; return this.samples[((k % n) + n) % n]; }
+  sample(k: number): Sample { return this.samples[Math.max(0, Math.min(this.samples.length - 1, Math.round(k)))]; }
   get count() { return this.samples.length; }
   get step() { return STEP; }
 }

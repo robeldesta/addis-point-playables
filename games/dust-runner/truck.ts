@@ -20,10 +20,10 @@ export const SPEC = {
   damp: 1900,
   rebound: 2700,
   arb: 7000,
-  power: 330000,
-  maxDrive: 15000,
+  power: 390000,
+  maxDrive: 17500,
   brake: 9000,
-  drag: 3.4,
+  drag: 3.0,
   maxSteer: 0.6,
 };
 

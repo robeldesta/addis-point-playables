@@ -25,7 +25,7 @@ export class Autopilot {
     while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
     // slow down for the sharpest bend in the next ~60 m
     let c = 0;
-    for (let j = 0; j < 120; j += 4) c = Math.max(c, this.curv[(this.k + j) % T.count]);
+    for (let j = 0; j < 120; j += 4) c = Math.max(c, this.curv[Math.min(T.count - 1, this.k + j)]);
     const vmax = Math.min(maxSpeed, Math.sqrt(this.lat / Math.max(c, 1e-4)));
     out.steer = tr.grounded === 4 ? Math.max(-1, Math.min(1, -e * 1.6)) : 0;
     out.throttle = tr.speed < vmax ? 1 : 0;

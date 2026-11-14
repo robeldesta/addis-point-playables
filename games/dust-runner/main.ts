@@ -1,16 +1,15 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as P from "../../src/platform/platform";
-import { Terrain, N, CELL, HALF, TRACK_HALF_W } from "./terrain";
 import { Truck, type Input } from "./truck";
 import { TruckView } from "./model";
 import { Autopilot } from "./autopilot";
 import { Sfx } from "./sfx";
-import { STAGES, medalFor, MEDAL_ICON, type Stage } from "./stages";
+import { BIOMES, medalFor, MEDAL_ICON, type Biome } from "./biomes";
+import { buildWorld, type World } from "./world";
+import type { Terrain } from "./terrain";
 
-// Dust Runner: driving prototype. One long-travel trophy truck, one desert
-// loop with whoops, rollers and jumps. The question it answers: is the
-// truck fun to drive?
+// Dust Runner: trophy truck stages across five desert places. Each stage is
+// a point-to-point run through open terrain with checkpoint gates.
 
 const GAME_ID = "dust-runner";
 const DT = 1 / 120;
@@ -20,15 +19,11 @@ const DEBUG = qs.has("debug");
 const AUTO = qs.has("auto");
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
-// seeded random for decor
-let seed = 1234567;
-const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
-
 // ------------------------------------------------------------------
 // save
 // ------------------------------------------------------------------
-interface Save { bestLap: number; bestAir: number; laps: number; stages: Record<string, number> }
-let save: Save = { bestLap: 0, bestAir: 0, laps: 0, stages: {} };
+interface Save { bestAir: number; places: Record<string, number> }
+let save: Save = { bestAir: 0, places: {} };
 const persist = () => { P.save(GAME_ID, JSON.stringify(save)); };
 
 // ------------------------------------------------------------------
@@ -44,19 +39,9 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 host.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-{
-  const c = document.createElement("canvas");
-  c.width = 4; c.height = 256;
-  const g = c.getContext("2d")!;
-  const gr = g.createLinearGradient(0, 0, 0, 256);
-  gr.addColorStop(0, "#3d7fd1"); gr.addColorStop(0.42, "#86b9ea"); gr.addColorStop(0.62, "#f3d9b1"); gr.addColorStop(1, "#f6c993");
-  g.fillStyle = gr; g.fillRect(0, 0, 4, 256);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
-  scene.background = t;
-}
-scene.fog = new THREE.Fog(0xf0d3a8, 90, 380);
-const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 900);
-scene.add(new THREE.HemisphereLight(0xdbeaff, 0xc08850, 1.35));
+const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 1400);
+const hemi = new THREE.HemisphereLight(0xdbeaff, 0xc08850, 1.35);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d6, 2.6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
@@ -66,6 +51,25 @@ sun.shadow.bias = -0.0006;
 sun.shadow.normalBias = 0.04;
 scene.add(sun, sun.target);
 const SUN_DIR = new THREE.Vector3(0.45, 0.8, 0.35).normalize();
+let skyTex: THREE.Texture | null = null;
+const dustColor = new THREE.Color(0xe9c99a);
+
+function applyLook(b: Biome) {
+  const c = document.createElement("canvas");
+  c.width = 4; c.height = 256;
+  const g = c.getContext("2d")!;
+  const gr = g.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, b.sky[0]); gr.addColorStop(0.42, b.sky[1]); gr.addColorStop(0.6, b.sky[2]); gr.addColorStop(1, b.sky[3]);
+  g.fillStyle = gr; g.fillRect(0, 0, 4, 256);
+  skyTex?.dispose();
+  skyTex = new THREE.CanvasTexture(c); skyTex.colorSpace = THREE.SRGBColorSpace;
+  scene.background = skyTex;
+  scene.fog = new THREE.Fog(b.fog, b.fogNear, b.fogFar);
+  hemi.color.setHex(b.hemiSky); hemi.groundColor.setHex(b.hemiGround); hemi.intensity = b.hemiI;
+  sun.color.setHex(b.sun); sun.intensity = b.sunI;
+  SUN_DIR.set(...b.sunDir).normalize();
+  dustColor.setHex(b.crest).lerp(new THREE.Color(b.track), 0.5);
+}
 
 let viewW = 1, viewH = 1;
 function resize() {
@@ -80,284 +84,21 @@ window.addEventListener("resize", resize);
 resize();
 
 // ------------------------------------------------------------------
-// terrain
+// world (one per place)
 // ------------------------------------------------------------------
-const terrain = new Terrain();
-{
-  const R = N + 1;
-  const pos = new Float32Array(R * R * 3);
-  const col = new Float32Array(R * R * 3);
-  const sand = new THREE.Color(0xeec48a), sand2 = new THREE.Color(0xe0aa6c), crest = new THREE.Color(0xf3d29c);
-  const road = new THREE.Color(0xa86c3c), rut = new THREE.Color(0x7d4f2c), berm = new THREE.Color(0xcf9963), rock = new THREE.Color(0xc0784a);
-  const c = new THREE.Color();
-  const nrm = { x: 0, y: 1, z: 0 };
-  for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-    const idx = j * R + i;
-    const x = i * CELL - HALF, z = j * CELL - HALF, y = terrain.h[idx];
-    pos.set([x, y, z], idx * 3);
-    const n1 = Math.sin(x * 0.11 + z * 0.07) * Math.cos(z * 0.13 - x * 0.05);
-    const n2 = Math.sin(x * 0.53 + z * 0.41) * 0.5 + Math.sin(x * 1.7 - z * 1.3) * 0.5;
-    c.copy(sand).lerp(sand2, 0.5 + 0.5 * n1);
-    c.lerp(crest, clamp((y - 3) / 6, 0, 0.6));
-    terrain.normal(x, z, nrm);
-    if (nrm.y < 0.85) c.lerp(rock, clamp((0.85 - nrm.y) * 4, 0, 0.8));
-    const d = terrain.dist[idx];
-    if (d < TRACK_HALF_W + 3.5) {
-      const rc = new THREE.Color().copy(road);
-      const rr = Math.min(Math.abs(d - 1.15), Math.abs(d - 3.6));
-      if (rr < 0.7) rc.lerp(rut, (1 - rr / 0.7) * 0.6);
-      if (d > TRACK_HALF_W) rc.lerp(berm, clamp((d - TRACK_HALF_W) / 2, 0, 1));
-      c.lerp(rc, clamp((TRACK_HALF_W + 3.5 - d) / 2, 0, 1));
-    }
-    const sh = 1 + n2 * 0.035;
-    col.set([c.r * sh, c.g * sh, c.b * sh], idx * 3);
-  }
-  const index: number[] = [];
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const a = j * R + i, b = a + 1, cc = a + R + 1, d = a + R;
-    index.push(a, cc, b, a, d, cc);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
-  g.setIndex(index);
-  g.computeVertexNormals();
-  const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
-  m.receiveShadow = true;
-  scene.add(m);
-  // outer desert floor up to the horizon
-  const outer = new THREE.Mesh(new THREE.RingGeometry(190, 1200, 48, 1), new THREE.MeshLambertMaterial({ color: 0xe0b27a }));
-  outer.rotation.x = -Math.PI / 2;
-  outer.position.y = 18;
-  scene.add(outer);
-}
-
-// ------------------------------------------------------------------
-// decor
-// ------------------------------------------------------------------
-const flat = (color: number) => new THREE.MeshLambertMaterial({ color, flatShading: true });
-const dummy = new THREE.Object3D();
-function freeSpot(minDist: number, lim = 182): [number, number] | null {
-  for (let t = 0; t < 30; t++) {
-    const x = (rnd() * 2 - 1) * lim, z = (rnd() * 2 - 1) * lim;
-    const i = Math.round((x + HALF) / CELL), j = Math.round((z + HALF) / CELL);
-    if (terrain.dist[j * (N + 1) + i] > minDist) return [x, z];
-  }
-  return null;
-}
-// distant mesas
-{
-  const layers = [0xc8774a, 0xd98d5c, 0xb8653d];
-  for (let i = 0; i < 22; i++) {
-    const a = (i / 22) * Math.PI * 2 + rnd() * 0.2;
-    const r = 300 + rnd() * 200;
-    const w = 25 + rnd() * 50, h = 30 + rnd() * 50;
-    const grp = new THREE.Group();
-    let y = 0;
-    for (let l = 0; l < 3; l++) {
-      const lh = h / 3;
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(w * (1 - l * 0.12) * 0.85, w * (1 - l * 0.12), lh, 7), flat(layers[l]));
-      m.position.y = y + lh / 2;
-      y += lh;
-      grp.add(m);
-    }
-    grp.position.set(Math.cos(a) * r, 14, Math.sin(a) * r);
-    grp.rotation.y = rnd() * 6;
-    grp.scale.z = 0.5 + rnd() * 0.8;
-    scene.add(grp);
-  }
-}
-// bushes and small rocks (no collision)
-{
-  const bush = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.6, 0), flat(0x8a8f4a), 260);
-  const pebble = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.4, 0), flat(0xa86f45), 220);
-  for (let i = 0; i < 260; i++) {
-    const p = freeSpot(TRACK_HALF_W + 3); if (!p) continue;
-    const s = 0.6 + rnd() * 1.1;
-    dummy.position.set(p[0], terrain.height(p[0], p[1]) + 0.15 * s, p[1]);
-    dummy.scale.set(s, s * 0.6, s);
-    dummy.rotation.set(0, rnd() * 6, 0);
-    dummy.updateMatrix();
-    bush.setMatrixAt(i, dummy.matrix);
-  }
-  for (let i = 0; i < 220; i++) {
-    const p = freeSpot(TRACK_HALF_W + 2); if (!p) continue;
-    const s = 0.4 + rnd() * 0.9;
-    dummy.position.set(p[0], terrain.height(p[0], p[1]), p[1]);
-    dummy.scale.set(s, s * 0.7, s);
-    dummy.rotation.set(rnd(), rnd() * 6, rnd());
-    dummy.updateMatrix();
-    pebble.setMatrixAt(i, dummy.matrix);
-  }
-  bush.castShadow = pebble.castShadow = true;
-  scene.add(bush, pebble);
-}
-// boulders (solid)
-interface Boulder { x: number; z: number; r: number; top: number }
-const boulders: Boulder[] = [];
-{
-  const COUNT = 38;
-  const mesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), flat(0xb06a40), COUNT);
-  for (let i = 0; i < COUNT; i++) {
-    const p = freeSpot(TRACK_HALF_W + 9); if (!p) continue;
-    const r = 1.2 + rnd() * 1.8;
-    const y = terrain.height(p[0], p[1]);
-    dummy.position.set(p[0], y + r * 0.35, p[1]);
-    dummy.scale.set(r, r * 0.75, r * (0.8 + rnd() * 0.4));
-    dummy.rotation.set(rnd() * 0.5, rnd() * 6, rnd() * 0.5);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-    boulders.push({ x: p[0], z: p[1], r: r * 0.95, top: y + r * 1.0 });
-  }
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-}
-// cacti (knock them over)
-interface Cactus { x: number; z: number; y: number; s: number; rot: number; tilt: number; tiltV: number; ax: number; az: number; down: boolean }
-const cacti: Cactus[] = [];
-const cactusMesh = (() => {
-  const parts: THREE.BufferGeometry[] = [];
-  const trunk = new THREE.CylinderGeometry(0.28, 0.33, 3.2, 7); trunk.translate(0, 1.6, 0); parts.push(trunk);
-  const top = new THREE.SphereGeometry(0.28, 7, 4, 0, Math.PI * 2, 0, Math.PI / 2); top.translate(0, 3.2, 0); parts.push(top);
-  for (const [sx, h, len] of [[1, 1.4, 1.1], [-1, 1.9, 0.9]] as const) {
-    const arm = new THREE.CylinderGeometry(0.18, 0.18, 0.7, 6); arm.rotateZ(Math.PI / 2); arm.translate(sx * 0.55, h, 0); parts.push(arm);
-    const up = new THREE.CylinderGeometry(0.18, 0.2, len, 6); up.translate(sx * 0.85, h + len / 2, 0); parts.push(up);
-    const cap = new THREE.SphereGeometry(0.18, 6, 3, 0, Math.PI * 2, 0, Math.PI / 2); cap.translate(sx * 0.85, h + len, 0); parts.push(cap);
-  }
-  const g = mergeGeometries(parts.map((p) => p.toNonIndexed()))!;
-  const COUNT = 70;
-  const mesh = new THREE.InstancedMesh(g, flat(0x5f8a3e), COUNT);
-  for (let i = 0; i < COUNT; i++) {
-    const p = freeSpot(TRACK_HALF_W + 5) ?? [0, 0];
-    const c: Cactus = { x: p[0], z: p[1], y: terrain.height(p[0], p[1]) - 0.1, s: 0.8 + rnd() * 0.6, rot: rnd() * 6, tilt: 0, tiltV: 0, ax: 1, az: 0, down: false };
-    cacti.push(c);
-  }
-  mesh.castShadow = true;
-  scene.add(mesh);
-  return mesh;
-})();
-const _cq = new THREE.Quaternion(), _cq2 = new THREE.Quaternion(), _cax = new THREE.Vector3();
-function cactusMatrix(i: number) {
-  const c = cacti[i];
-  _cq.setFromAxisAngle(_cax.set(0, 1, 0), c.rot);
-  _cq2.setFromAxisAngle(_cax.set(c.ax, 0, c.az), c.tilt);
-  dummy.quaternion.copy(_cq2).multiply(_cq);
-  dummy.position.set(c.x, c.y, c.z);
-  dummy.scale.setScalar(c.s);
-  dummy.updateMatrix();
-  cactusMesh.setMatrixAt(i, dummy.matrix);
-}
-cacti.forEach((_, i) => cactusMatrix(i));
-// things the truck can flatten: flag posts and signs
-interface Knock { x: number; z: number; r: number; tilt: number; tiltV: number; ax: number; az: number; down: boolean; apply: (q: THREE.Quaternion) => void }
-const knocks: Knock[] = [];
-const _kq = new THREE.Quaternion(), _kax = new THREE.Vector3();
-// course markers: posts with flags along both edges
-{
-  const every = Math.round(18 / terrain.step);
-  const n = (Math.ceil(terrain.count / every) + 1) * 2;
-  const post = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 1.8, 5), flat(0x3a3a3a), n);
-  const flagG = new THREE.PlaneGeometry(0.6, 0.38); flagG.translate(0.3, 0, 0);
-  const flag = new THREE.InstancedMesh(flagG, new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide }), n);
-  const ca = new THREE.Color(0xff5a1f), cb = new THREE.Color(0xfff3e0);
-  let m = 0;
-  for (let k = 0; k < terrain.count - every / 2; k += every) {
-    const s = terrain.sample(k);
-    for (const side of [1, -1]) {
-      const x = s.x + s.tz * side * (TRACK_HALF_W + 3.2), z = s.z - s.tx * side * (TRACK_HALF_W + 3.2);
-      const y = terrain.height(x, z);
-      const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(s.tx, s.tz) + Math.PI / 2);
-      const base = new THREE.Vector3(x, y, z), idx = m;
-      const pm4 = new THREE.Matrix4(), off = new THREE.Matrix4(), yawM = new THREE.Matrix4().makeRotationFromQuaternion(yaw), one = new THREE.Vector3(1, 1, 1);
-      const apply = (tq: THREE.Quaternion) => {
-        pm4.compose(base, tq, one).multiply(off.makeTranslation(0, 0.9, 0));
-        post.setMatrixAt(idx, pm4);
-        pm4.compose(base, tq, one).multiply(off.makeTranslation(0, 1.6, 0)).multiply(yawM);
-        flag.setMatrixAt(idx, pm4);
-        post.instanceMatrix.needsUpdate = flag.instanceMatrix.needsUpdate = true;
-      };
-      apply(new THREE.Quaternion());
-      flag.setColorAt(m, (k / every) % 2 ? ca : cb);
-      knocks.push({ x, z, r: 1.7, tilt: 0, tiltV: 0, ax: 1, az: 0, down: false, apply });
-      m++;
-    }
-  }
-  post.count = flag.count = m;
-  scene.add(post, flag);
-}
-// start/finish arch + chevron boards before each jump
-let finishArch: THREE.Group;
-const finishPillars: Boulder[] = [];
-function placeFinish(k: number | null) {
-  if (k === null || ((k % terrain.count) + terrain.count) % terrain.count < 4) {
-    finishArch.visible = false;
-    for (const b of finishPillars) { b.x = b.z = 9999; }
-    return;
-  }
-  const s = terrain.sample(k);
-  finishArch.visible = true;
-  finishArch.position.set(s.x, s.y + 0.2, s.z);
-  finishArch.rotation.y = Math.atan2(s.tx, s.tz);
-  const span = TRACK_HALF_W + 2.2;
-  [1, -1].forEach((side, i) => { const b = finishPillars[i]; b.x = s.x + s.tz * side * span; b.z = s.z - s.tx * side * span; b.top = s.y + 7; });
-}
-function canvasTex(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void) {
-  const c = document.createElement("canvas"); c.width = w; c.height = h;
-  draw(c.getContext("2d")!);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-{
-  const s = terrain.sample(0);
-  const head = Math.atan2(s.tx, s.tz);
-  const arch = new THREE.Group();
-  const pm = flat(0x1d2430);
-  const span = TRACK_HALF_W + 2.2;
-  for (const side of [1, -1]) {
-    const p = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6, 0.6), pm);
-    p.position.set(side * span, 3, 0);
-    p.castShadow = true;
-    arch.add(p);
-  }
-  const check = canvasTex(512, 64, (g) => {
-    for (let i = 0; i < 32; i++) for (let j = 0; j < 4; j++) { g.fillStyle = (i + j) % 2 ? "#111" : "#fff"; g.fillRect(i * 16, j * 16, 16, 16); }
-  });
-  const banner = new THREE.Mesh(new THREE.BoxGeometry(span * 2 + 0.6, 1.1, 0.3), [pm, pm, pm, pm, new THREE.MeshBasicMaterial({ map: check }), new THREE.MeshBasicMaterial({ map: check })]);
-  banner.position.y = 6;
-  banner.castShadow = true;
-  arch.add(banner);
-  for (const side of [1, -1]) boulders.push({ x: s.x + s.tz * side * span, z: s.z - s.tx * side * span, r: 0.4, top: s.y + 7 });
-  arch.position.set(s.x, s.y + 0.2, s.z);
-  arch.rotation.y = head;
-  scene.add(arch);
-  finishArch = arch.clone();
-  finishArch.visible = false;
-  scene.add(finishArch);
-  for (let i = 0; i < 2; i++) { const b = { x: 9999, z: 9999, r: 0.4, top: 0 }; finishPillars.push(b); boulders.push(b); }
-
-  const chev = canvasTex(128, 128, (g) => {
-    g.fillStyle = "#ffb300"; g.fillRect(0, 0, 128, 128);
-    g.fillStyle = "#111"; g.beginPath(); g.moveTo(64, 14); g.lineTo(114, 80); g.lineTo(88, 80); g.lineTo(64, 48); g.lineTo(40, 80); g.lineTo(14, 80); g.closePath(); g.fill();
-    g.fillRect(14, 96, 100, 14);
-  });
-  const boardM = new THREE.MeshLambertMaterial({ map: chev });
-  for (const f of terrain.features) {
-    if (f.kind !== "gap" && f.kind !== "kicker" && f.kind !== "table") continue;
-    const k = Math.round((f.at - 12) / terrain.step);
-    const ss = terrain.sample(k);
-    for (const side of [1, -1]) {
-      const x = ss.x + ss.tz * side * (TRACK_HALF_W + 4.2), z = ss.z - ss.tx * side * (TRACK_HALF_W + 4.2);
-      const g = new THREE.Group();
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2, 5), pm); pole.position.y = 1; g.add(pole);
-      const b = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3), boardM); b.position.y = 2.2; g.add(b);
-      const back = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3), pm); back.position.y = 2.2; back.rotation.y = Math.PI; g.add(back);
-      g.position.set(x, terrain.height(x, z), z);
-      g.rotation.y = Math.atan2(ss.tx, ss.tz) + Math.PI;
-      scene.add(g);
-      const yawQ = g.quaternion.clone();
-      knocks.push({ x, z, r: 1.9, tilt: 0, tiltV: 0, ax: 1, az: 0, down: false, apply: (tq) => { g.quaternion.copy(tq).multiply(yawQ); } });
-    }
-  }
+let world: World;
+let terrain: Terrain;
+let worldIdx = -1;
+let pilot: Autopilot;
+function loadWorld(i: number) {
+  if (i === worldIdx) return;
+  if (world) { scene.remove(world.group); world.dispose(); }
+  worldIdx = i;
+  world = buildWorld(BIOMES[i], i + 1);
+  terrain = world.terrain;
+  pilot = new Autopilot(terrain, 5);
+  scene.add(world.group);
+  applyLook(BIOMES[i]);
 }
 
 // ------------------------------------------------------------------
@@ -373,7 +114,7 @@ dustGeo.setAttribute("position", new THREE.BufferAttribute(dPos, 3));
 dustGeo.setAttribute("size", new THREE.BufferAttribute(dSize, 1));
 dustGeo.setAttribute("alpha", new THREE.BufferAttribute(dAlpha, 1));
 const dustMat = new THREE.ShaderMaterial({
-  uniforms: { uScale: { value: 400 }, uColor: { value: new THREE.Color(0xe9c99a) } },
+  uniforms: { uScale: { value: 400 }, uColor: { value: dustColor } },
   vertexShader: `attribute float size; attribute float alpha; varying float vA; uniform float uScale;
     void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); gl_Position = projectionMatrix * mv; gl_PointSize = size * uScale / max(0.5, -mv.z); vA = alpha; }`,
   fragmentShader: `uniform vec3 uColor; varying float vA;
@@ -411,7 +152,6 @@ function updateDust(dt: number) {
 const truck = new Truck();
 const view = new TruckView();
 scene.add(view.root);
-const pilot = new Autopilot(terrain);
 const sfx = new Sfx();
 let paused = false;
 P.onAudioChange((on) => sfx.setEnabled(on));
@@ -422,7 +162,7 @@ P.onResume(() => { paused = false; sfx.resume(); });
 function placeAtTrack(k: number) {
   const s = terrain.sample(k), s2 = terrain.sample(k + 4);
   truck.place(s.x, s.z, Math.atan2(s2.x - s.x, s2.z - s.z), terrain);
-  pilot.k = ((k % terrain.count) + terrain.count) % terrain.count;
+  pilot.k = clamp(Math.round(k), 0, terrain.count - 1);
 }
 
 // ------------------------------------------------------------------
@@ -499,14 +239,14 @@ function readInput(dt: number, out: Input): Input {
 type Mode = "menu" | "drive";
 let mode: Mode = "menu";
 const input: Input = { throttle: 0, brake: 0, steer: 0, handbrake: false };
-let lapTime = 0, lapRunning = false, nextCp = 1, lastQ = 3, lapN = 0;
 let penalty = 0, offTrack = false;
 // focus: slow motion earned by air time
 let focus = 0, focusOn = false, timeScale = 1;
 const FOCUS_SCALE = 0.35, FOCUS_DRAIN = 0.3, FOCUS_FILL = 0.2; // drain per real second, fill per second of air
-let flipTimer = 0, stuckTimer = 0;
+let flipTimer = 0;
 let launchX = 0, launchZ = 0, wasAir = false, airPeak = 0;
 let shake = 0;
+const _kq = new THREE.Quaternion(), _kax = new THREE.Vector3();
 
 function setFocus(on: boolean) {
   if (on && (focus < 0.1 || mode !== "drive")) return;
@@ -515,116 +255,101 @@ function setFocus(on: boolean) {
 }
 function resetTruck() {
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
-  placeAtTrack(near.k - 12);
-  flipTimer = 0; stuckTimer = 0;
+  placeAtTrack(Math.max(world.startK, near.k - 12));
+  flipTimer = 0;
   pop("Reset", "");
 }
 
-// ---- timed stages ----
-let stage: Stage | null = null;
+// ---- stages ----
 let stageIdx = 0;
 let phase: "count" | "run" | "done" = "run";
-let countT = 0, stageTime = 0, prog = 0, progK = 0, goal = 1, lastCount = 0;
+let countT = 0, stageTime = 0, prog = 0, progK = 0, lastCount = 0, nextGate = 0;
+const splits: number[] = [];
 
-function enterDrive() {
+function startStage(i: number) {
+  loadWorld(i);
+  stageIdx = i;
   mode = "drive";
-  document.body.classList.add("driving");
+  document.body.classList.add("driving", "staged");
   $("menu").classList.remove("show");
   $("results").classList.remove("show");
   setFocus(false);
   focus = 0; penalty = 0;
+  for (const c of world.knocks) if (c.down || c.tilt) { c.down = false; c.tilt = 0; c.tiltV = 0; c.apply(_kq.identity()); }
+  placeAtTrack(world.startK - 14);
+  for (let s = 0; s < 40; s++) physicsStep(DT);
+  progK = world.startK - 14; prog = progK;
+  phase = "count"; countT = 3.2; lastCount = 4; stageTime = 0; nextGate = 0; splits.length = 0;
   camSnap = true;
   sfx.unlock();
   if (!usedTouch && !("ontouchstart" in window)) document.body.classList.add("kb");
 }
-function startFree() {
-  enterDrive();
-  stage = null;
-  document.body.classList.remove("staged");
-  placeFinish(null);
-  placeAtTrack(terrain.count - 40);
-  lapRunning = false; lapTime = 0; nextCp = 1; lastQ = 3; lapN = 0;
-}
-function startStage(i: number) {
-  enterDrive();
-  stageIdx = i;
-  stage = STAGES[i];
-  document.body.classList.add("staged");
-  const k0 = Math.round(stage.start * terrain.count);
-  goal = Math.round(stage.laps * terrain.count);
-  placeFinish(k0 + goal);
-  placeAtTrack(k0 - 14);
-  for (const c of knocks) if (c.down) { c.down = false; c.tilt = 0; c.tiltV = 0; c.apply(_kq.identity()); }
-  progK = k0; prog = -14;
-  phase = "count"; countT = 3.2; lastCount = 4; stageTime = 0;
-  lapRunning = false;
-}
-const unlocked = (i: number) => i === 0 || !!medalFor(STAGES[i - 1], save.stages[STAGES[i - 1].id] ?? 0);
+const unlocked = (i: number) => i === 0 || !!medalFor(BIOMES[i - 1], save.places[BIOMES[i - 1].id] ?? 0);
 function finishStage() {
-  if (!stage) return;
+  const b = BIOMES[stageIdx];
   phase = "done";
   const t = stageTime;
-  const prev = save.stages[stage.id] ?? 0;
+  const prev = save.places[b.id] ?? 0;
   const best = !prev || t < prev;
-  if (best) save.stages[stage.id] = t;
+  if (best) save.places[b.id] = t;
   persist();
   sfx.ding();
-  const m = medalFor(stage, t);
+  const m = medalFor(b, t);
   pop("FINISH", fmt2(t));
-  const st = stage;
+  const idx = stageIdx;
   window.setTimeout(() => {
-    if (stage !== st || phase !== "done") return;
+    if (stageIdx !== idx || phase !== "done" || mode !== "drive") return;
     $("rmedal").textContent = MEDAL_ICON[m] || "🏁";
     $("rtitle").textContent = m ? `${m[0].toUpperCase()}${m.slice(1)} medal!` : "No medal";
+    $("rplace").textContent = b.name;
     $("rtime").textContent = fmt2(t);
-    $("rpen").textContent = penalty > 0.05 ? `includes +${penalty.toFixed(1)}s off the road` : "Clean run, no off-road time";
+    $("rpen").textContent = penalty > 0.05 ? `includes +${penalty.toFixed(1)}s off the route` : "Clean run, no off-route time";
     $("rbest").textContent = best ? "New best time!" : `Best ${fmt2(prev)}`;
-    $("rtargets").innerHTML = targetsHtml(st, save.stages[st.id]);
+    $("rtargets").innerHTML = targetsHtml(b, save.places[b.id]);
     const nx = $("rnext") as HTMLButtonElement;
-    nx.style.display = stageIdx < STAGES.length - 1 ? "" : "none";
-    nx.disabled = !unlocked(stageIdx + 1);
-    nx.textContent = nx.disabled ? "Next stage 🔒 (get bronze)" : "Next stage";
+    nx.style.display = idx < BIOMES.length - 1 ? "" : "none";
+    nx.disabled = !unlocked(idx + 1);
+    nx.textContent = nx.disabled ? "Next place 🔒 (get bronze)" : `Next: ${BIOMES[idx + 1]?.name ?? ""}`;
     $("results").classList.add("show");
     document.body.classList.remove("driving");
   }, 1400);
 }
-function targetsHtml(st: Stage, best?: number) {
+function targetsHtml(b: Biome, best?: number) {
   const row = (m: "gold" | "silver" | "bronze") =>
-    `<span class="${best && best <= st[m] ? "got" : ""}">${MEDAL_ICON[m]} ${fmt2(st[m])}</span>`;
+    `<span class="${best && best <= b[m] ? "got" : ""}">${MEDAL_ICON[m]} ${fmt2(b[m])}</span>`;
   return row("gold") + row("silver") + row("bronze");
 }
 function showMenu() {
   mode = "menu";
-  stage = null;
   setFocus(false);
   document.body.classList.remove("driving", "staged", "offtrack");
   $("results").classList.remove("show");
-  placeFinish(null);
   buildStageList();
   $("menu").classList.add("show");
-  placeAtTrack(pilot.k);
+  placeAtTrack(world.startK);
+  camSnap = true;
 }
 function buildStageList() {
   const list = $("stagelist");
   list.innerHTML = "";
   let medals = 0;
-  STAGES.forEach((st, i) => {
-    const best = save.stages[st.id] ?? 0;
-    const m = medalFor(st, best);
+  BIOMES.forEach((b, i) => {
+    const best = save.places[b.id] ?? 0;
+    const m = medalFor(b, best);
     if (m) medals++;
     const open = unlocked(i);
-    const b = document.createElement("button");
-    b.className = "stage" + (open ? "" : " locked");
-    b.innerHTML = `<b>${i + 1}. ${st.name}</b><span class="m">${open ? MEDAL_ICON[m] || "" : "🔒"}</span>` +
-      `<small>${open ? st.blurb : "Get bronze on the stage before"}</small>` +
-      `<small class="t">${best ? "Best " + fmt2(best) : "Gold " + fmt2(st.gold)}</small>`;
-    if (open) b.addEventListener("click", () => startStage(i));
-    list.appendChild(b);
+    const el = document.createElement("button");
+    el.className = "stage" + (open ? "" : " locked");
+    el.style.setProperty("--c", "#" + b.ground[1].toString(16).padStart(6, "0"));
+    el.innerHTML = `<b>${i + 1}. ${b.name}</b><span class="m">${open ? MEDAL_ICON[m] || "" : "🔒"}</span>` +
+      `<small>${open ? b.blurb : "Get bronze on the place before"}</small>` +
+      `<small class="t">${best ? "Best " + fmt2(best) : "Gold " + fmt2(b.gold)}</small>`;
+    if (open) el.addEventListener("click", () => startStage(i));
+    list.appendChild(el);
   });
-  $("medals").textContent = `${medals} / ${STAGES.length} stages medalled`;
+  $("medals").textContent = `${medals} / ${BIOMES.length} places medalled`;
 }
-$("free").addEventListener("click", startFree);
-$("rretry").addEventListener("click", () => { if (stage) startStage(stageIdx); });
+$("rretry").addEventListener("click", () => startStage(stageIdx));
 $("rnext").addEventListener("click", () => { if (unlocked(stageIdx + 1)) startStage(stageIdx + 1); });
 $("rmenu").addEventListener("click", showMenu);
 $("quit").addEventListener("pointerdown", (e) => { e.stopPropagation(); showMenu(); });
@@ -643,21 +368,15 @@ const fmt2 = (t: number) => {
   const m = Math.floor(t / 60), s = t - m * 60;
   return `${m}:${s.toFixed(2).padStart(5, "0")}`;
 };
-const fmt = (t: number) => {
-  const m = Math.floor(t / 60), s = t - m * 60;
-  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
-};
 
 function physicsStep(dt: number) {
   if (mode === "drive" && !AUTO) {
     readInput(dt, input);
-    if (stage && phase === "count") { input.throttle = 0; input.brake = 0; input.handbrake = true; }
-    if (stage && phase === "done") { input.throttle = 0; input.brake = 1; input.steer = 0; }
-  }
-  else pilot.drive(truck, input, mode === "menu" ? 24 : 30);
+    if (phase === "count") { input.throttle = 0; input.brake = 0; input.handbrake = true; }
+    if (phase === "done") { input.throttle = 0; input.brake = 1; input.steer = 0; }
+  } else pilot.drive(truck, input, mode === "menu" ? 26 : 45);
   truck.step(dt, input, terrain);
-  // boulders
-  for (const b of boulders) {
+  for (const b of world.boulders) {
     const dx = truck.pos.x - b.x, dz = truck.pos.z - b.z;
     const rr = b.r + 1.5;
     const d2 = dx * dx + dz * dz;
@@ -675,29 +394,7 @@ function physicsStep(dt: number) {
 }
 
 function gameTick(dt: number) {
-  // cacti
-  for (let i = 0; i < cacti.length; i++) {
-    const c = cacti[i];
-    if (!c.down) {
-      const dx = c.x - truck.pos.x, dz = c.z - truck.pos.z;
-      if (dx * dx + dz * dz < 2.6 * 2.6 && truck.vel.lengthSq() > 4) {
-        c.down = true;
-        const v = Math.hypot(truck.vel.x, truck.vel.z) || 1;
-        c.ax = truck.vel.z / v; c.az = -truck.vel.x / v;
-        c.tiltV = 1.5 + v * 0.1;
-        truck.vel.multiplyScalar(0.93);
-        sfx.thud(0.5);
-        for (let k = 0; k < 10; k++) emitDust(c.x, c.y + 0.5, c.z, (Math.random() - 0.5) * 4, Math.random() * 2, (Math.random() - 0.5) * 4, 1.2, 1.4);
-      }
-    } else if (c.tilt < 1.45) {
-      c.tiltV += 6 * dt;
-      c.tilt = Math.min(1.45, c.tilt + c.tiltV * dt);
-      cactusMatrix(i);
-      cactusMesh.instanceMatrix.needsUpdate = true;
-    }
-  }
-
-  for (const c of knocks) {
+  for (const c of world.knocks) {
     if (!c.down) {
       const dx = c.x - truck.pos.x, dz = c.z - truck.pos.z;
       if (dx * dx + dz * dz < c.r * c.r && truck.vel.lengthSq() > 4) {
@@ -705,9 +402,10 @@ function gameTick(dt: number) {
         const v = Math.hypot(truck.vel.x, truck.vel.z) || 1;
         c.ax = truck.vel.z / v; c.az = -truck.vel.x / v;
         c.tiltV = 3 + v * 0.25;
-        truck.vel.multiplyScalar(0.97);
+        truck.vel.multiplyScalar(c.slow);
         sfx.thud(0.3);
-        for (let k = 0; k < 6; k++) emitDust(c.x, terrain.height(c.x, c.z) + 0.3, c.z, (Math.random() - 0.5) * 3, Math.random() * 2, (Math.random() - 0.5) * 3, 1, 1.2);
+        const y = terrain.height(c.x, c.z);
+        for (let k = 0; k < 6; k++) emitDust(c.x, y + 0.3, c.z, (Math.random() - 0.5) * 3, Math.random() * 2, (Math.random() - 0.5) * 3, 1, 1.2);
       }
     } else if (c.tilt < 1.5) {
       c.tiltV += 8 * dt;
@@ -754,61 +452,43 @@ function gameTick(dt: number) {
   wasAir = inAir;
   if (truck.impact > 5 && !inAir) { sfx.thud(truck.impact / 10); shake = Math.min(1, shake + truck.impact * 0.04); }
 
-  if (mode !== "drive") return;
-
-  // flipped or stuck: auto reset
-  if (truck.isUpsideDown()) flipTimer += dt; else flipTimer = 0;
-  if (flipTimer > 2.2) { resetTruck(); pop("Flipped!", "Back on the track"); }
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
+  if (mode !== "drive") {
+    pilot.k = near.k;
+    if (near.k > world.finishK - 10 || truck.isUpsideDown()) placeAtTrack(world.startK);
+    return;
+  }
+  if (truck.isUpsideDown()) flipTimer += dt; else flipTimer = 0;
+  if (flipTimer > 2.2) { resetTruck(); pop("Flipped!", "Back on the route"); }
   pilot.k = near.k;
-
-  offTrack = near.d > TRACK_HALF_W + 3;
-  if (stage) { stageTick(dt, near); return; }
-  // lap timing via quarter checkpoints
-  const q = Math.floor((near.k / terrain.count) * 4) % 4;
-  if (near.d < 30) {
-    if (q === 0 && lastQ === 3) {
-      if (lapRunning && nextCp === 4) {
-        lapN++;
-        save.laps++;
-        const best = !save.bestLap || lapTime < save.bestLap;
-        if (best) save.bestLap = lapTime;
-        persist();
-        sfx.ding();
-        const pen = penalty > 0.05 ? ` · incl. +${penalty.toFixed(1)}s off track` : "";
-        pop(`LAP ${fmt(lapTime)}`, (best ? "New best lap!" : `Best ${fmt(save.bestLap)}`) + pen);
-      } else if (!lapRunning) pop("GO!", "Lap timer started");
-      lapRunning = true; lapTime = 0; nextCp = 1; penalty = 0;
-    } else if (q === nextCp) nextCp++;
-    lastQ = q;
-  }
-  // off the road: the clock runs double
-  if (lapRunning) {
-    lapTime += dt;
-    if (offTrack) { lapTime += dt; penalty += dt; }
-  }
+  offTrack = near.d > terrain.offRoute;
+  stageTick(dt, near);
 }
 
 function stageTick(dt: number, near: { k: number; d: number }) {
   if (phase === "count") {
     countT -= dt;
     const c = Math.ceil(countT);
-    if (c !== lastCount && c >= 1 && c <= 3) { lastCount = c; pop(String(c), stage!.name); sfx.beep(false); }
+    if (c !== lastCount && c >= 1 && c <= 3) { lastCount = c; pop(String(c), BIOMES[stageIdx].name); sfx.beep(false); }
     if (countT <= 0) { phase = "run"; pop("GO!", ""); sfx.beep(true); }
     return;
   }
-  // progress along the road; big jumps in position (cutting across) don't count
-  if (near.d < 30) {
-    let dk = near.k - progK;
-    if (dk > terrain.count / 2) dk -= terrain.count;
-    if (dk < -terrain.count / 2) dk += terrain.count;
+  // progress along the route; big jumps in position (cutting across) don't count
+  if (near.d < 45) {
+    const dk = near.k - progK;
     if (Math.abs(dk) < 60) prog += dk;
     progK = near.k;
   }
   if (phase !== "run") return;
   stageTime += dt;
   if (offTrack) { stageTime += dt; penalty += dt; }
-  if (prog >= goal) finishStage();
+  if (nextGate < world.gates.length && prog >= world.gates[nextGate]) {
+    nextGate++;
+    splits.push(stageTime);
+    sfx.ding();
+    pop(`CHECKPOINT ${nextGate}/${world.gates.length}`, fmt2(stageTime));
+  }
+  if (prog >= world.finishK) finishStage();
 }
 
 // ------------------------------------------------------------------
@@ -870,17 +550,17 @@ const spdEl = $("spdv"), lapEl = $("lap"), bestEl = $("best"), fpsEl = $("fps");
 let fpsAcc = 0, fpsN = 0;
 function hud(dt: number) {
   spdEl.textContent = String(Math.round(Math.abs(truck.speed) * 3.6));
-  if (stage) {
+  if (mode === "drive") {
+    const b = BIOMES[stageIdx];
     lapEl.textContent = fmt2(stageTime);
-    const next = stageTime <= stage.gold ? ["🥇", stage.gold] : stageTime <= stage.silver ? ["🥈", stage.silver] : stageTime <= stage.bronze ? ["🥉", stage.bronze] : null;
+    const next = stageTime <= b.gold ? ["🥇", b.gold] : stageTime <= b.silver ? ["🥈", b.silver] : stageTime <= b.bronze ? ["🥉", b.bronze] : null;
     bestEl.textContent = next ? `${next[0]} ${fmt2(next[1] as number)}` : "No medal this run";
-    progFill.style.width = `${clamp(prog / goal, 0, 1) * 100}%`;
-  } else lapEl.textContent = lapRunning ? fmt(lapTime) : "--:--";
-  document.body.classList.toggle("offtrack", mode === "drive" && offTrack && (stage ? phase === "run" : lapRunning));
-  offEl.textContent = `OFF TRACK · TIME x2  +${penalty.toFixed(1)}s`;
+    progFill.style.width = `${clamp((prog - world.startK) / (world.finishK - world.startK), 0, 1) * 100}%`;
+  }
+  document.body.classList.toggle("offtrack", mode === "drive" && offTrack && phase === "run");
+  offEl.textContent = `OFF ROUTE · TIME x2  +${penalty.toFixed(1)}s`;
   focusFill.style.height = `${focus * 100}%`;
   focusBtn.classList.toggle("ready", focus >= 0.25 && !focusOn);
-  if (!stage) bestEl.textContent = save.bestLap ? `Best ${fmt(save.bestLap)}` : lapRunning ? "First lap" : "Cross the line to start";
   if (DEBUG) {
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) { fpsEl.textContent = `${Math.round(fpsN / fpsAcc)} fps · gnd ${truck.grounded} · ${truck.wheels.map((w) => w.comp.toFixed(2)).join(" ")}`; fpsAcc = 0; fpsN = 0; }
@@ -921,13 +601,17 @@ async function boot() {
   try {
     const raw = await P.loadSave(GAME_ID);
     if (raw) save = { ...save, ...JSON.parse(raw) };
+    if (!save.places) save.places = {};
   } catch { /* fresh save */ }
-  if (DEBUG) { document.body.classList.add("debug"); Object.assign(window as any, { scene, camera, renderer, truck, knocks }); }
-  placeAtTrack(0);
+  if (DEBUG) document.body.classList.add("debug");
+  let first = 0;
+  for (let i = 0; i < BIOMES.length; i++) if (unlocked(i)) first = i;
+  loadWorld(qs.has("place") ? +(qs.get("place") || 0) : first);
+  placeAtTrack(world.startK);
   for (let i = 0; i < 60; i++) physicsStep(DT); // settle the suspension
   buildStageList();
-  if (qs.has("drive")) startFree();
-  if (qs.has("stage")) startStage(+(qs.get("stage") || 0));
+  if (qs.has("place")) startStage(+(qs.get("place") || 0));
+  if (DEBUG) Object.assign(window as any, { scene, camera, renderer, truck, get world() { return world; } });
   last = performance.now();
   requestAnimationFrame(frame);
   P.firstFrameReady();

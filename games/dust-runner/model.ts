@@ -10,9 +10,9 @@ function numberDecal(num: string): THREE.Texture {
   const c = document.createElement("canvas");
   c.width = 256; c.height = 128;
   const g = c.getContext("2d")!;
-  g.fillStyle = "#ffffff"; g.fillRect(0, 0, 256, 128);
-  g.fillStyle = "#ff5a1f"; g.fillRect(0, 96, 256, 32);
-  g.fillStyle = "#13233a";
+  g.fillStyle = "#111"; g.fillRect(0, 0, 256, 128);
+  g.fillStyle = "#d32f2f"; g.beginPath(); g.moveTo(0, 128); g.lineTo(256, 70); g.lineTo(256, 128); g.fill();
+  g.fillStyle = "#ffffff";
   g.font = "900 92px Arial"; g.textAlign = "center"; g.textBaseline = "middle";
   g.fillText(num, 128, 52);
   const t = new THREE.CanvasTexture(c);
@@ -51,6 +51,9 @@ function makeWheel(tyreM: THREE.Material, rimM: THREE.Material, side: number) {
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.58, R * 0.58, W + 0.02, 10), rimM);
   rim.rotation.z = Math.PI / 2;
   g.add(rim);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(R * 0.6, 0.035, 5, 16), mat(0xd32f2f));
+  ring.rotation.y = Math.PI / 2;
+  for (const sx of [1, -1]) { const r2 = ring.clone(); r2.position.x = sx * (W / 2 + 0.012); g.add(r2); }
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.2, R * 0.2, W + 0.06, 6), mat(0x2a2f36));
   hub.rotation.z = Math.PI / 2;
   hub.position.x = side * 0.01;
@@ -65,13 +68,13 @@ export class TruckView {
   spinners: THREE.Group[] = [];
   arms: { upper: THREE.Mesh; lower: THREE.Mesh; shock: THREE.Mesh }[] = [];
   private armMat = mat(0x8c96a3, { metalness: 0.5, roughness: 0.4 });
-  private shockMat = mat(0xffc21a, { metalness: 0.3, roughness: 0.4 });
+  private shockMat = mat(0x1e5bd8, { metalness: 0.4, roughness: 0.35 });
   brakeLights: THREE.MeshStandardMaterial;
 
-  constructor(livery = 0xff5a1f) {
+  constructor(livery = 0xd32f2f) {
     const paint = mat(livery, { roughness: 0.45 });
     const white = mat(0xf4f1ea, { roughness: 0.5 });
-    const dark = mat(0x1d2430);
+    const dark = mat(0x15171b);
     const cage = mat(0x2b3442, { metalness: 0.4, roughness: 0.5 });
     const glass = mat(0x1b2a3a, { roughness: 0.15, metalness: 0.3 });
     this.brakeLights = mat(0x550000, { emissive: 0x000000 }) as THREE.MeshStandardMaterial;
@@ -98,9 +101,12 @@ export class TruckView {
     this.body.add(shellM);
 
     // white lower stripe
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.22, 4.9), white);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.22, 4.9), dark);
+    const pin = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.06, 4.6), white); pin.position.set(0, 0.26, 0); this.body.add(pin);
     stripe.position.set(0, 0.12, 0);
     this.body.add(stripe);
+    const hood = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 1.2), dark);
+    hood.position.set(0, 0.66, 1.55); hood.rotation.x = 0.14; this.body.add(hood);
     // wide fenders
     for (const z of [1.72, -1.62]) for (const x of [1, -1]) {
       const f = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 1.5), paint);
@@ -122,19 +128,19 @@ export class TruckView {
       sw.position.set(x, 1.0, -0.45);
       sw.rotation.y = x > 0 ? Math.PI / 2 : -Math.PI / 2;
       this.body.add(sw);
-      const dec = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.45), new THREE.MeshBasicMaterial({ map: numberDecal("27") }));
+      const dec = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.45), new THREE.MeshBasicMaterial({ map: numberDecal("11") }));
       dec.position.set(x * 1.005, 0.36, 0.55);
       dec.rotation.y = x > 0 ? Math.PI / 2 : -Math.PI / 2;
       this.body.add(dec);
     }
     // roof light bar
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.14, 0.18), dark);
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.18, 0.2), dark);
     bar.position.set(0, 1.45, -0.2);
     this.body.add(bar);
     const lightM = new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff1c4, emissiveIntensity: 0.8 });
-    for (let i = 0; i < 6; i++) {
-      const l = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.04), lightM);
-      l.position.set(-0.7 + i * 0.28, 1.45, -0.1);
+    for (let i = 0; i < 10; i++) {
+      const l = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.13, 0.04), lightM);
+      l.position.set(-0.9 + i * 0.2, 1.45, -0.09);
       this.body.add(l);
     }
     // front grille + bumper tube
@@ -147,6 +153,12 @@ export class TruckView {
       this.body.add(hl);
     }
     this.body.add(tube(new THREE.Vector3(-0.85, -0.05, 2.7), new THREE.Vector3(0.85, -0.05, 2.7), 0.05, cage));
+    const fbar = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.2, 0.16), dark);
+    fbar.position.set(0, 0.08, 2.66); this.body.add(fbar);
+    for (let i = 0; i < 6; i++) {
+      const l = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.14, 0.04), lightM);
+      l.position.set(-0.62 + i * 0.25, 0.08, 2.75); this.body.add(l);
+    }
     // roll cage over the bed
     const cp = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
     for (const x of [-0.8, 0.8]) {
@@ -179,7 +191,7 @@ export class TruckView {
     this.root.add(this.body);
 
     const tyreM = mat(0x22252a, { roughness: 0.95 });
-    const rimM = mat(0xd9dde3, { metalness: 0.6, roughness: 0.35 });
+    const rimM = mat(0x1c1f24, { metalness: 0.5, roughness: 0.4 });
     for (let i = 0; i < 4; i++) {
       const side = i % 2 === 0 ? 1 : -1;
       const wheel = new THREE.Group();
