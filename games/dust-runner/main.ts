@@ -72,6 +72,8 @@ function applyLook(b: Biome) {
   sun.color.setHex(b.sun); sun.intensity = b.sunI;
   SUN_DIR.set(...b.sunDir).normalize();
   dustColor.setHex(b.crest).lerp(new THREE.Color(b.track), 0.5);
+  camera.far = b.fogFar + 150;
+  camera.updateProjectionMatrix();
 }
 
 let viewW = 1, viewH = 1;
@@ -144,7 +146,7 @@ function gridAll() {
 // ------------------------------------------------------------------
 // dust particles
 // ------------------------------------------------------------------
-const DUST_N = 700;
+const DUST_N = 1100;
 const dPos = new Float32Array(DUST_N * 3), dVel = new Float32Array(DUST_N * 3);
 const dAge = new Float32Array(DUST_N).fill(99), dLife = new Float32Array(DUST_N).fill(1), dSize0 = new Float32Array(DUST_N);
 const dSize = new Float32Array(DUST_N), dAlpha = new Float32Array(DUST_N);
@@ -459,16 +461,23 @@ function buildStageList() {
     el.className = "stage" + (open ? "" : " locked") + (b.stadium ? " race" : "");
     el.style.setProperty("--c", "#" + b.ground[1].toString(16).padStart(6, "0"));
     el.innerHTML = `<b>${i + 1}. ${b.name}</b><span class="m">${open ? MEDAL_ICON[m] || "" : "🔒"}</span>` +
-      `<small>${open ? b.blurb : "Get bronze on the place before"}</small>` +
+      `<small>${b.km ? b.km.toFixed(1) + " km · " : ""}${open ? b.blurb : "Get bronze on the level before"}</small>` +
       `<small class="t">${b.stadium ? (race ? `Best ${ORD[race.pos]} · ${fmt2(race.time)}` : "Win for gold") : best ? "Best " + fmt2(best) : "Gold " + fmt2(b.gold)}</small>`;
-    if (open) el.addEventListener("click", () => startStage(i));
+    if (open) el.addEventListener("click", () => goStage(i));
     list.appendChild(el);
   });
   $("medals").textContent = `${medals} / ${BIOMES.length} places medalled`;
   $("cash1").textContent = `$${save.garage.cash}`;
 }
-$("rretry").addEventListener("click", () => startStage(stageIdx));
-$("rnext").addEventListener("click", () => { if (unlocked(stageIdx + 1)) startStage(stageIdx + 1); });
+$("rretry").addEventListener("click", () => goStage(stageIdx));
+$("rnext").addEventListener("click", () => { if (unlocked(stageIdx + 1)) goStage(stageIdx + 1); });
+/** big circuits take a moment to build: show a loading card first */
+function goStage(i: number) {
+  if (i === worldIdx) { startStage(i); return; }
+  $("loading").classList.add("show");
+  $("loadname").textContent = BIOMES[i].name;
+  window.setTimeout(() => { startStage(i); $("loading").classList.remove("show"); }, 60);
+}
 $("rmenu").addEventListener("click", showMenu);
 
 // ---- garage ----
@@ -602,6 +611,15 @@ function gameTick(dt: number) {
     }
   }
 
+  // blowing sand in a storm
+  if (BIOMES[worldIdx].storm) {
+    const n = Math.floor(dt * 90) + (Math.random() < (dt * 90) % 1 ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2, r = 4 + Math.random() * 30;
+      emitDust(truck.pos.x + Math.cos(a) * r - 10, truck.pos.y - 1 + Math.random() * 6, truck.pos.z + Math.sin(a) * r - 4,
+        14 + Math.random() * 6, 0.3 + Math.random(), 5 + Math.random() * 3, 3 + Math.random() * 3, 1.6 + Math.random());
+    }
+  }
   // dust from the tyres
   tyreDust(truck, dt);
   for (const r of rivals) tyreDust(r.truck, dt);

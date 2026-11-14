@@ -1,4 +1,7 @@
-import type { FeatureKind } from "./terrain";
+import type { FeatureKind, Terrain } from "./terrain";
+import { CIRCUITS } from "./circuits";
+import { genFeatures } from "./routegen";
+import baked from "./circuits.json";
 
 // Each stage is its own place: a desert sub-biome with its own ground shape,
 // colours, light, plants and route.
@@ -21,11 +24,19 @@ export interface Biome {
   cactus: number; bush: number; bushColor: number; boulder: number; boulderColor: number; pebble: number;
   gold: number; silver: number; bronze: number;
   loop?: boolean; stadium?: boolean; laps?: number;
+  size?: number;                       // map side (m), default 480
+  ctrl?: [number, number][];           // route control points in metres (circuits)
+  featuresAt?: (T: Terrain) => [FeatureKind, number, number][];
+  grip?: number;                       // surface grip multiplier
+  storm?: boolean;                     // blowing sand, short visibility
+  wreck?: boolean;                     // industrial junk and containers
+  gateCount?: number;
+  km?: number;
 }
 
 const S = Math.sin, C = Math.cos;
 
-export const BIOMES: Biome[] = [
+const PLACES: Biome[] = [
   {
     id: "flats", name: "Creosote Flats", blurb: "Wide open scrubland. Flat out, big whoops",
     route: [[-160, -150], [-60, -165], [40, -125], [125, -150], [160, -70], [100, 0], [-20, -25], [-120, 5], [-160, 90], [-90, 150], [30, 120], [150, 160]],
@@ -118,3 +129,80 @@ export type Medal = "gold" | "silver" | "bronze" | "";
 export const medalFor = (b: Biome, t: number): Medal =>
   !t ? "" : t <= b.gold ? "gold" : t <= b.silver ? "silver" : t <= b.bronze ? "bronze" : "";
 export const MEDAL_ICON: Record<Medal, string> = { gold: "🥇", silver: "🥈", bronze: "🥉", "": "" };
+
+// ------------------------------------------------------------------
+// the ten circuits: looks built on the places above, routes baked offline
+// ------------------------------------------------------------------
+const place = (id: string) => PLACES.find((p) => p.id === id)!;
+const ENVS: Record<string, Partial<Biome> & { from: string }> = {
+  flats: { from: "flats" },
+  canyon: { from: "canyon", sink: 14, wall: 13 },
+  ridge: {
+    from: "mesa", follow: 10, sink: -0.3, wall: 10,
+    base: (x, z) => 9 * S(x * 0.021 + 0.4) * C(z * 0.017) + 5 * S((x + z) * 0.031) + 1.2 * S(x * 0.09 - z * 0.07),
+    ground: [0xc98b5e, 0xb57a50], crest: 0xdba070, rock: 0x9c5a3a, track: 0xd6a378, rut: 0xa8774f,
+    sky: ["#2d6ac2", "#86b4e8", "#f3d0a8", "#e8b88c"], fog: 0xeccaa4, hemiGround: 0xa0603c,
+  },
+  wash: { from: "wash", sink: 3.6, wall: 11 },
+  storm: {
+    from: "dunes", storm: true, grip: 0.93, fogNear: 25, fogFar: 170, fog: 0xd9a86c,
+    sky: ["#b8783e", "#d29a5c", "#e2b27a", "#d9a86c"], sunI: 1.6, hemiI: 1.6, sun: 0xffd9a8, cactus: 0, bush: 60,
+  },
+  mesa2: {
+    from: "mesa", follow: 18, sink: 0.4, wall: 12, boulder: 60, pebble: 600,
+    base: (x, z) => { const t = 6 * S(x * 0.013 + 1) * C(z * 0.011) + 4 * S((x - z) * 0.02); return 3.5 * Math.round(t / 3.5) + 0.8 * (t - 3.5 * Math.round(t / 3.5)) + 0.5 * S(x * 0.12 + z * 0.1); },
+    ground: [0x9c7f66, 0x8a6f58], crest: 0xb59a80, rock: 0x6e5a4a, track: 0xbca486, rut: 0x8c7660,
+  },
+  pass: {
+    from: "mesa", follow: 26, wall: 18,
+    base: (x, z) => 26 * S(x * 0.008 + 1) * C(z * 0.0072) + 10 * S((x - z) * 0.013) + 2 * S(x * 0.05 + z * 0.04),
+    far: [0x6f7a86, 0x5f6a76], farH: [90, 160], fogFar: 560,
+  },
+  wreck: {
+    from: "flats", wreck: true, cactus: 6, bush: 220, boulder: 10,
+    ground: [0xa89a86, 0x968876], crest: 0xbab0a0, rock: 0x77706a, track: 0x9b8b76, rut: 0x6e6252, bushColor: 0x6b6e3e,
+    sky: ["#4a6a8a", "#9ab0c0", "#d8d0c0", "#c8bca8"], fog: 0xcfc6b6, fogNear: 80, fogFar: 380, sunI: 2.3,
+  },
+  backbone: {
+    from: "canyon", sink: 9, wall: 12, follow: 14,
+    base: (x, z) => 18 + 7 * S(x * 0.016) * C(z * 0.013) + 3 * Math.abs(S((x + z) * 0.024)) + 0.6 * S(x * 0.2 + z * 0.15),
+    sky: ["#3a2f6a", "#c86a4a", "#f2a868", "#e08a58"], fog: 0xe09a70,
+  },
+  grand: {
+    from: "flats", follow: 14,
+    base: (x, z) => { const u = x * 0.012 + z * 0.006 + S(z * 0.008) * 1.4; return 3.2 * (1 - Math.abs(C(u))) ** 1.5 + 1.4 * S(x * 0.017 + 0.5) * C(z * 0.021) + 0.5 * S((x - z) * 0.045); },
+    ground: [0xe0c08e, 0xcfaa78], crest: 0xf0d8ae, sky: ["#2a6cc8", "#86baea", "#f6dcb4", "#ecd0a2"],
+  },
+};
+
+const BAKED = baked as unknown as Record<string, { size: number; ctrl: [number, number][] }>;
+const CIRCUIT_BIOMES: Biome[] = CIRCUITS.map((c, i) => {
+  const env = ENVS[c.env];
+  const base = place(env.from);
+  const { from: _f, ...over } = env; void _f;
+  const b = BAKED[c.id];
+  const area = (b.size / 480) ** 2;
+  const out: Biome = {
+    ...base, ...over,
+    id: c.id, name: c.name, blurb: c.blurb, routeW: c.routeW,
+    route: [], ctrl: b.ctrl, size: b.size, features: [],
+    featuresAt: (T) => genFeatures(T, 11 + i * 17, c.mix, c.gap),
+    gateCount: Math.max(3, Math.min(8, Math.round(c.length / 900))),
+    gold: 0, silver: 0, bronze: 0, km: c.length / 1000,
+  };
+  // scatter scales with the map, capped for phones
+  out.bush = Math.min(3500, Math.round(out.bush * area));
+  out.pebble = Math.min(3000, Math.round(out.pebble * area));
+  out.cactus = Math.min(140, Math.round(out.cactus * area));
+  out.boulder = Math.min(260, Math.round(out.boulder * area));
+  return out;
+});
+
+/** medal times per circuit (s), set from simulated runs of the starter truck */
+const MEDALS: Record<string, [number, number, number]> = {
+  c1: [108, 123, 154], c2: [143, 163, 204], c3: [163, 186, 232], c4: [196, 222, 278], c5: [247, 281, 351],
+  c6: [242, 275, 344], c7: [199, 226, 283], c8: [270, 307, 383], c9: [369, 419, 524], c10: [332, 378, 472],
+};
+for (const b of CIRCUIT_BIOMES) { const m = MEDALS[b.id]; if (m) [b.gold, b.silver, b.bronze] = m; }
+
+export const BIOMES: Biome[] = [...CIRCUIT_BIOMES, place("stadium")];
