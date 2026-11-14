@@ -20,6 +20,7 @@ export interface Biome {
   far: number[]; farH: [number, number]; // distant mesas/mountains
   cactus: number; bush: number; bushColor: number; boulder: number; boulderColor: number; pebble: number;
   gold: number; silver: number; bronze: number;
+  loop?: boolean; stadium?: boolean; laps?: number;
 }
 
 const S = Math.sin, C = Math.cos;
@@ -96,6 +97,20 @@ export const BIOMES: Biome[] = [
     far: [0x7f8a96, 0x6f7a86], farH: [60, 110],
     cactus: 15, bush: 380, bushColor: 0x6a7440, boulder: 45, boulderColor: 0x7c7068, pebble: 380,
     gold: 63, silver: 72, bronze: 89,
+  },
+  {
+    id: "stadium", name: "Thunder Bowl", blurb: "Stadium race under the lights. 3 laps, 3 rivals, big jumps",
+    route: [[-72, -38], [-20, -50], [40, -44], [80, -30], [88, 4], [62, 30], [28, 14], [0, 22], [-12, 46], [-52, 48], [-84, 22], [-90, -12]],
+    base: (x, z) => 0.08 * Math.sin(x * 0.7) * Math.cos(z * 0.6),
+    follow: 6, sink: 0, wall: 3, routeW: 6.5,
+    features: [["table", 0.07, 62], ["whoops", 0.2, 54], ["kicker", 0.33, 46], ["bigwhoops", 0.45, 52], ["gap", 0.57, 46], ["rollers", 0.7, 70], ["kicker", 0.86, 46]],
+    ground: [0x5d4a3a, 0x54443a], crest: 0x6a5644, rock: 0x4a3c30, track: 0x8b5e3c, rut: 0x6a4428,
+    sky: ["#070b1f", "#18224a", "#3a3558", "#1c1a26"], fog: 0x1a1c2a, fogNear: 160, fogFar: 520,
+    sun: 0xf4f6ff, sunI: 2.6, sunDir: [0.25, 1, 0.35], hemiSky: 0xa8b4dc, hemiGround: 0x6a5240, hemiI: 1.5,
+    far: [0x22242e], farH: [0, 0],
+    cactus: 0, bush: 0, bushColor: 0x555555, boulder: 0, boulderColor: 0x6a5a4a, pebble: 0,
+    gold: 0, silver: 0, bronze: 0,
+    loop: true, stadium: true, laps: 3,
   },
 ];
 

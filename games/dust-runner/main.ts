@@ -4,9 +4,10 @@ import { Truck, type Input } from "./truck";
 import { TruckView } from "./model";
 import { Autopilot } from "./autopilot";
 import { Sfx } from "./sfx";
-import { BIOMES, medalFor, MEDAL_ICON, type Biome } from "./biomes";
+import { BIOMES, medalFor, MEDAL_ICON, type Biome, type Medal } from "./biomes";
 import { buildWorld, type World } from "./world";
 import type { Terrain } from "./terrain";
+import { makeRival, rivalStep, rivalRecover, gridPlace, wallCollide, truckCollide, LapCounter, type Rival } from "./race";
 
 // Dust Runner: trophy truck stages across five desert places. Each stage is
 // a point-to-point run through open terrain with checkpoint gates.
@@ -22,8 +23,8 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 // ------------------------------------------------------------------
 // save
 // ------------------------------------------------------------------
-interface Save { bestAir: number; places: Record<string, number> }
-let save: Save = { bestAir: 0, places: {} };
+interface Save { bestAir: number; places: Record<string, number>; race: Record<string, { pos: number; time: number }> }
+let save: Save = { bestAir: 0, places: {}, race: {} };
 const persist = () => { P.save(GAME_ID, JSON.stringify(save)); };
 
 // ------------------------------------------------------------------
@@ -99,6 +100,43 @@ function loadWorld(i: number) {
   pilot = new Autopilot(terrain, 5);
   scene.add(world.group);
   applyLook(BIOMES[i]);
+  for (const v of rivalViews) scene.remove(v.root);
+  rivals = []; rivalViews = [];
+  if (BIOMES[i].stadium) {
+    RIVALS.forEach(([name, livery, cap, lat]) => {
+      const r = makeRival(terrain, name, livery, cap, lat);
+      const v = new TruckView(livery);
+      rivals.push(r); rivalViews.push(v); scene.add(v.root);
+    });
+    lapC = new LapCounter(terrain, 0);
+    gridAll();
+  }
+}
+
+// ------------------------------------------------------------------
+// stadium race: rivals and the starting grid
+// ------------------------------------------------------------------
+const RIVALS: [string, number, number, number][] = [
+  ["Blaze", 0x1565c0, 30, 4.3],
+  ["Viper", 0x2e9e4f, 31, 5.0],
+  ["Ace", 0xf2c200, 32, 5.8],
+];
+let rivals: Rival[] = [];
+let rivalViews: TruckView[] = [];
+let lapC: LapCounter;
+const isRace = () => !!BIOMES[worldIdx]?.stadium;
+/** grid: two rows behind the line, the player starts at the back */
+function gridAll() {
+  const n = terrain.count;
+  const slots = [[0, -2.4], [0, 2.4], [1, -2.4], [1, 2.4]];
+  rivals.forEach((r, i) => {
+    const k = n - 8 - slots[i][0] * 13;
+    gridPlace(r.truck, terrain, k, slots[i][1]);
+    r.pilot.k = k; r.lap.reset(k); r.done = 0; r.flipT = r.stuckT = 0;
+  });
+  const k = n - 8 - slots[3][0] * 13;
+  gridPlace(truck, terrain, k, slots[3][1]);
+  pilot.k = k; lapC.reset(k);
 }
 
 // ------------------------------------------------------------------
@@ -162,7 +200,8 @@ P.onResume(() => { paused = false; sfx.resume(); });
 function placeAtTrack(k: number) {
   const s = terrain.sample(k), s2 = terrain.sample(k + 4);
   truck.place(s.x, s.z, Math.atan2(s2.x - s.x, s2.z - s.z), terrain);
-  pilot.k = clamp(Math.round(k), 0, terrain.count - 1);
+  const n = terrain.count;
+  pilot.k = terrain.loop ? ((Math.round(k) % n) + n) % n : clamp(Math.round(k), 0, n - 1);
 }
 
 // ------------------------------------------------------------------
@@ -255,7 +294,7 @@ function setFocus(on: boolean) {
 }
 function resetTruck() {
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
-  placeAtTrack(Math.max(world.startK, near.k - 12));
+  placeAtTrack(terrain.loop ? near.k - 12 : Math.max(world.startK, near.k - 12));
   flipTimer = 0;
   pop("Reset", "");
 }
@@ -276,15 +315,74 @@ function startStage(i: number) {
   setFocus(false);
   focus = 0; penalty = 0;
   for (const c of world.knocks) if (c.down || c.tilt) { c.down = false; c.tilt = 0; c.tiltV = 0; c.apply(_kq.identity()); }
-  placeAtTrack(world.startK - 14);
+  phase = "count";
+  if (isRace()) gridAll(); else placeAtTrack(world.startK - 14);
   for (let s = 0; s < 40; s++) physicsStep(DT);
   progK = world.startK - 14; prog = progK;
-  phase = "count"; countT = 3.2; lastCount = 4; stageTime = 0; nextGate = 0; splits.length = 0;
+  countT = 3.2; lastCount = 4; stageTime = 0; nextGate = 0; splits.length = 0;
+  lapShown = 0; lapStart = 0; bestLap = 0; raceClock = 0;
   camSnap = true;
   sfx.unlock();
   if (!usedTouch && !("ontouchstart" in window)) document.body.classList.add("kb");
 }
-const unlocked = (i: number) => i === 0 || !!medalFor(BIOMES[i - 1], save.places[BIOMES[i - 1].id] ?? 0);
+const unlocked = (i: number) => i === 0 || !!BIOMES[i].stadium || !!medalFor(BIOMES[i - 1], save.places[BIOMES[i - 1].id] ?? 0);
+// ---- stadium race ----
+let lapShown = 0, lapStart = 0, bestLap = 0, raceClock = 0;
+const ORD = ["", "1st", "2nd", "3rd", "4th"];
+const POS_MEDAL: Medal[] = ["", "gold", "silver", "bronze", ""];
+function racePlace() {
+  // finished trucks rank by time, the rest by distance covered
+  const me = lapC.prog;
+  let ahead = 0;
+  for (const r of rivals) if (r.done || r.lap.prog > me) ahead++;
+  return ahead + 1;
+}
+function raceTick(dt: number) {
+  const n = terrain.count, laps = BIOMES[stageIdx].laps ?? 3;
+  if (phase === "count") return;
+  raceClock += dt;
+  for (const r of rivals) if (!r.done && r.lap.prog >= laps * n) r.done = raceClock;
+  if (phase !== "run") return;
+  stageTime += dt;
+  const lap = lapC.lap();
+  if (lap > lapShown) {
+    const lt = stageTime - lapStart;
+    lapStart = stageTime; lapShown = lap;
+    if (!bestLap || lt < bestLap) bestLap = lt;
+    if (lap < laps) { sfx.ding(); pop(lap === laps - 1 ? "FINAL LAP" : `LAP ${lap + 1}/${laps}`, `${fmt2(lt)} · ${ORD[racePlace()]}`); }
+  }
+  if (lapC.prog >= laps * n) finishRace();
+}
+function finishRace() {
+  const b = BIOMES[stageIdx];
+  phase = "done";
+  const t = stageTime, place = racePlace();
+  const prev = save.race[b.id];
+  const best = !prev || place < prev.pos || (place === prev.pos && t < prev.time);
+  if (best) save.race[b.id] = { pos: place, time: t };
+  persist();
+  sfx.ding();
+  pop(place === 1 ? "YOU WIN!" : `${ORD[place]} PLACE`, fmt2(t), place === 1 ? "" : place === 4 ? "bad" : "");
+  const idx = stageIdx;
+  window.setTimeout(() => {
+    if (stageIdx !== idx || phase !== "done" || mode !== "drive") return;
+    const m = POS_MEDAL[place];
+    $("rmedal").textContent = MEDAL_ICON[m] || "🏁";
+    $("rtitle").textContent = place === 1 ? "1st place!" : `${ORD[place]} place`;
+    $("rplace").textContent = b.name;
+    $("rtime").textContent = fmt2(t);
+    $("rpen").textContent = `Best lap ${fmt2(bestLap)}`;
+    $("rbest").textContent = best ? "New personal best!" : `Best ${ORD[prev!.pos]} · ${fmt2(prev!.time)}`;
+    const order = rivals.map((r) => ({ name: r.name, t: r.done, prog: r.lap.prog, me: false }))
+      .sort((a, c) => (a.t && c.t ? a.t - c.t : a.t ? -1 : c.t ? 1 : c.prog - a.prog));
+    order.splice(place - 1, 0, { name: "You", t, prog: 0, me: true });
+    $("rtargets").innerHTML = order.map((o, i) => `<span class="${o.me ? "got" : ""}">${ORD[i + 1]} ${o.name} ${o.t ? fmt2(o.t) : "racing"}</span>`).join("");
+    ($("rnext") as HTMLButtonElement).style.display = "none";
+    $("results").classList.add("show");
+    document.body.classList.remove("driving");
+  }, 1600);
+}
+
 function finishStage() {
   const b = BIOMES[stageIdx];
   phase = "done";
@@ -326,7 +424,7 @@ function showMenu() {
   $("results").classList.remove("show");
   buildStageList();
   $("menu").classList.add("show");
-  placeAtTrack(world.startK);
+  if (isRace()) gridAll(); else placeAtTrack(world.startK);
   camSnap = true;
 }
 function buildStageList() {
@@ -335,15 +433,16 @@ function buildStageList() {
   let medals = 0;
   BIOMES.forEach((b, i) => {
     const best = save.places[b.id] ?? 0;
-    const m = medalFor(b, best);
+    const race = save.race[b.id];
+    const m = b.stadium ? POS_MEDAL[race?.pos ?? 0] : medalFor(b, best);
     if (m) medals++;
     const open = unlocked(i);
     const el = document.createElement("button");
-    el.className = "stage" + (open ? "" : " locked");
+    el.className = "stage" + (open ? "" : " locked") + (b.stadium ? " race" : "");
     el.style.setProperty("--c", "#" + b.ground[1].toString(16).padStart(6, "0"));
     el.innerHTML = `<b>${i + 1}. ${b.name}</b><span class="m">${open ? MEDAL_ICON[m] || "" : "🔒"}</span>` +
       `<small>${open ? b.blurb : "Get bronze on the place before"}</small>` +
-      `<small class="t">${best ? "Best " + fmt2(best) : "Gold " + fmt2(b.gold)}</small>`;
+      `<small class="t">${b.stadium ? (race ? `Best ${ORD[race.pos]} · ${fmt2(race.time)}` : "Win for gold") : best ? "Best " + fmt2(best) : "Gold " + fmt2(b.gold)}</small>`;
     if (open) el.addEventListener("click", () => startStage(i));
     list.appendChild(el);
   });
@@ -376,6 +475,18 @@ function physicsStep(dt: number) {
     if (phase === "done") { input.throttle = 0; input.brake = 1; input.steer = 0; }
   } else pilot.drive(truck, input, mode === "menu" ? 26 : 45);
   truck.step(dt, input, terrain);
+  if (isRace()) {
+    const hold = mode === "drive" && phase === "count";
+    for (const r of rivals) rivalStep(r, terrain, dt, hold);
+    const all = [truck, ...rivals.map((r) => r.truck)];
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+      const hit = truckCollide(all[i], all[j]);
+      if (hit > 2 && i === 0) { sfx.thud(Math.min(1, hit / 10)); shake = Math.min(1, shake + hit * 0.03); }
+    }
+    const wh = wallCollide(truck, terrain, pilot.k);
+    if (wh > 3) { sfx.thud(Math.min(1, wh / 12)); shake = Math.min(1, shake + wh * 0.04); }
+    for (const r of rivals) wallCollide(r.truck, terrain, r.pilot.k);
+  }
   for (const b of world.boulders) {
     const dx = truck.pos.x - b.x, dz = truck.pos.z - b.z;
     const rr = b.r + 1.5;
@@ -415,18 +526,32 @@ function gameTick(dt: number) {
   }
 
   // dust from the tyres
-  const spd = truck.vel.length();
-  for (const w of truck.wheels) {
+  tyreDust(truck, dt);
+  for (const r of rivals) tyreDust(r.truck, dt);
+  if (isRace()) {
+    for (const r of rivals) {
+      rivalRecover(r, terrain, dt, mode !== "drive" || phase === "run");
+      const nn = terrain.nearest(r.truck.pos.x, r.truck.pos.z, r.pilot.k);
+      r.lap.update(nn.k, nn.d);
+    }
+  }
+  airTick(dt);
+}
+function tyreDust(tr: Truck, dt: number) {
+  const spd = tr.vel.length();
+  for (const w of tr.wheels) {
     if (!w.grounded) continue;
     const rate = (Math.max(0, spd - 3) * 0.35 + w.slip * 2.5) * dt;
     let n = Math.floor(rate) + (Math.random() < rate % 1 ? 1 : 0);
     n = Math.min(n, 3);
     for (let k = 0; k < n; k++) {
       emitDust(w.contact.x + (Math.random() - 0.5) * 0.5, w.contact.y + 0.15, w.contact.z + (Math.random() - 0.5) * 0.5,
-        -truck.vel.x * 0.15 + (Math.random() - 0.5) * 2, 0.6 + Math.random() * 1.2, -truck.vel.z * 0.15 + (Math.random() - 0.5) * 2,
+        -tr.vel.x * 0.15 + (Math.random() - 0.5) * 2, 0.6 + Math.random() * 1.2, -tr.vel.z * 0.15 + (Math.random() - 0.5) * 2,
         0.8 + Math.random() * 0.6 + spd * 0.02, 0.9 + Math.random() * 0.9);
     }
   }
+}
+function airTick(dt: number) {
 
   // air time
   const inAir = truck.grounded === 0;
@@ -455,24 +580,28 @@ function gameTick(dt: number) {
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
   if (mode !== "drive") {
     pilot.k = near.k;
-    if (near.k > world.finishK - 10 || truck.isUpsideDown()) placeAtTrack(world.startK);
+    if ((!terrain.loop && near.k > world.finishK - 10) || truck.isUpsideDown()) placeAtTrack(world.startK);
+    if (isRace() && rivals.every((r) => r.lap.prog > 6 * terrain.count)) gridAll();
     return;
   }
   if (truck.isUpsideDown()) flipTimer += dt; else flipTimer = 0;
   if (flipTimer > 2.2) { resetTruck(); pop("Flipped!", "Back on the route"); }
   pilot.k = near.k;
+  if (isRace()) { offTrack = false; lapC.update(near.k, near.d); raceTick(dt); countdown(dt); return; }
   offTrack = near.d > terrain.offRoute;
   stageTick(dt, near);
 }
 
+function countdown(dt: number) {
+  if (phase !== "count") return false;
+  countT -= dt;
+  const c = Math.ceil(countT);
+  if (c !== lastCount && c >= 1 && c <= 3) { lastCount = c; pop(String(c), BIOMES[stageIdx].name); sfx.beep(false); }
+  if (countT <= 0) { phase = "run"; pop("GO!", ""); sfx.beep(true); }
+  return true;
+}
 function stageTick(dt: number, near: { k: number; d: number }) {
-  if (phase === "count") {
-    countT -= dt;
-    const c = Math.ceil(countT);
-    if (c !== lastCount && c >= 1 && c <= 3) { lastCount = c; pop(String(c), BIOMES[stageIdx].name); sfx.beep(false); }
-    if (countT <= 0) { phase = "run"; pop("GO!", ""); sfx.beep(true); }
-    return;
-  }
+  if (countdown(dt)) return;
   // progress along the route; big jumps in position (cutting across) don't count
   if (near.d < 45) {
     const dk = near.k - progK;
@@ -553,9 +682,15 @@ function hud(dt: number) {
   if (mode === "drive") {
     const b = BIOMES[stageIdx];
     lapEl.textContent = fmt2(stageTime);
+    if (b.stadium) {
+      const laps = b.laps ?? 3;
+      bestEl.textContent = `${ORD[racePlace()]} / ${rivals.length + 1} · Lap ${clamp(lapC.lap() + 1, 1, laps)}/${laps}`;
+      progFill.style.width = `${clamp(lapC.prog / (laps * terrain.count), 0, 1) * 100}%`;
+    } else {
     const next = stageTime <= b.gold ? ["🥇", b.gold] : stageTime <= b.silver ? ["🥈", b.silver] : stageTime <= b.bronze ? ["🥉", b.bronze] : null;
     bestEl.textContent = next ? `${next[0]} ${fmt2(next[1] as number)}` : "No medal this run";
     progFill.style.width = `${clamp((prog - world.startK) / (world.finishK - world.startK), 0, 1) * 100}%`;
+    }
   }
   document.body.classList.toggle("offtrack", mode === "drive" && offTrack && phase === "run");
   offEl.textContent = `OFF ROUTE · TIME x2  +${penalty.toFixed(1)}s`;
@@ -588,6 +723,7 @@ function frame(now: number) {
   gameTick(dt);
   updateDust(dt);
   view.update(truck, input.brake > 0 && truck.speed > 0.5);
+  rivals.forEach((r, i) => rivalViews[i].update(r.truck, r.input.brake > 0 && r.truck.speed > 0.5));
   updateCamera(realDt);
   if (mode === "drive") {
     const slip = truck.wheels.reduce((a, w) => a + w.slip, 0);
@@ -602,16 +738,17 @@ async function boot() {
     const raw = await P.loadSave(GAME_ID);
     if (raw) save = { ...save, ...JSON.parse(raw) };
     if (!save.places) save.places = {};
+    if (!save.race) save.race = {};
   } catch { /* fresh save */ }
   if (DEBUG) document.body.classList.add("debug");
   let first = 0;
-  for (let i = 0; i < BIOMES.length; i++) if (unlocked(i)) first = i;
+  for (let i = 0; i < BIOMES.length; i++) if (unlocked(i) && !BIOMES[i].stadium) first = i;
   loadWorld(qs.has("place") ? +(qs.get("place") || 0) : first);
-  placeAtTrack(world.startK);
+  if (!isRace()) placeAtTrack(world.startK);
   for (let i = 0; i < 60; i++) physicsStep(DT); // settle the suspension
   buildStageList();
   if (qs.has("place")) startStage(+(qs.get("place") || 0));
-  if (DEBUG) Object.assign(window as any, { scene, camera, renderer, truck, get world() { return world; } });
+  if (DEBUG) Object.assign(window as any, { scene, camera, renderer, truck, get world() { return world; }, get rivals() { return rivals; }, get lapC() { return lapC; } });
   last = performance.now();
   requestAnimationFrame(frame);
   P.firstFrameReady();
