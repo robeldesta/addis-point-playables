@@ -35,13 +35,13 @@ export const TRUCKS: TruckDef[] = [
     id: "sidewinder", name: "Sidewinder", number: "27", livery: 0x1565c0, price: 3500, priceMul: 1.4,
     blurb: "Real race truck. More power and travel, wider stance.",
     base: { mass: 1800, power: 470000, maxDrive: 19500, rest: 0.9, bump: 0.82, k: 14500, k3: 26000, damp: 2200, rebound: 4200, bypass: 2, hbump: 50000,
-      arb: 8800, grip: 1.1, frontGrip: 1.04, assist: 1.25, lift: 0.62, maxSteer: 0.68, steerFade: 400, steerRate: 3.1, inertia: new THREE.Vector3(4400, 4400, 1600) },
+      arb: 8800, grip: 1.1, frontGrip: 1.04, rearGrip: 1.12, tc: 0.72, spin: 0.06, assist: 1.25, lift: 0.62, maxSteer: 0.68, steerFade: 400, steerRate: 3.1, inertia: new THREE.Vector3(4400, 4400, 1600) },
   },
   {
     id: "apex", name: "Apex Unlimited", number: "1", livery: 0x15171b, price: 9000, priceMul: 2,
     blurb: "Top class. Huge power, huge travel, glued to the ground.",
     base: { mass: 1750, power: 580000, maxDrive: 22000, rest: 0.98, bump: 0.9, k: 13000, k3: 10000, damp: 1900, rebound: 6000, bypass: 2.4, hbump: 90000,
-      arb: 10500, grip: 1.2, frontGrip: 1.08, assist: 1.5, lift: 0.68, yawDamp: 1.15, maxSteer: 0.74, steerFade: 520, steerRate: 3.6, inertia: new THREE.Vector3(5200, 4500, 1700) },
+      arb: 10500, grip: 1.2, frontGrip: 1.08, rearGrip: 1.18, tc: 0.7, spin: 0.03, assist: 1.5, lift: 0.68, yawDamp: 1.9, maxSteer: 0.74, steerFade: 520, steerRate: 3.6, inertia: new THREE.Vector3(5200, 4500, 1700) },
   },
 ];
 
@@ -53,6 +53,8 @@ export function buildSpec(def: TruckDef, lv: Levels): Spec {
   const [e, su, t, st] = lv;
   s.power *= 1 + 0.11 * e;
   s.maxDrive *= 1 + 0.07 * e;
+  s.tc -= 0.06 * e; // the engine package comes with smarter traction control
+  s.spin *= 1 - 0.25 * e;
   s.rest += 0.035 * su;
   s.bump += 0.035 * su;
   // race shocks: more rebound control, bigger bypass zones, hydraulic bump
@@ -65,12 +67,15 @@ export function buildSpec(def: TruckDef, lv: Levels): Spec {
   s.inertia.x *= 1 + 0.05 * su; // centralised mass: the body pitches less
   s.grip *= 1 + 0.06 * t;
   s.frontGrip += 0.02 * t;
+  s.rearGrip += 0.03 * t; // rear grip grows faster than front: more grip never means more tail-out
   s.maxSteer += 0.02 * t;
   s.steerFade += 40 * t;
   s.arb *= 1 + 0.14 * st;
   s.assist *= 1 + 0.22 * st;
   s.lift = Math.min(0.9, s.lift + 0.05 * st);
-  s.yawDamp *= 1 + 0.08 * st;
+  s.yawDamp += 0.15 * st;
+  s.tc = Math.max(0.65, s.tc - 0.04 * st);
+  s.spin *= 1 - 0.25 * st;
   return s;
 }
 

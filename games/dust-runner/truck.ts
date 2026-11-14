@@ -32,10 +32,13 @@ export const SPEC = {
   steerFade: 300,     // how quickly lock is reduced with speed (bigger = keeps more lock)
   steerRate: 2.6,     // how fast the wheels turn (rad/s)
   grip: 1.05,        // tyre grip multiplier
-  frontGrip: 1,      // extra front grip: >1 turns in harder, less understeer
+  frontGrip: 1,      // front tyre grip: >1 turns in harder
+  rearGrip: 1.04,    // rear tyre grip: keep it at or above frontGrip or the tail steps out
+  tc: 0.9,           // share of rear grip the throttle may use (traction control)
+  spin: 0.08,        // extra shove when the rear breaks loose (wheelspin)
   assist: 1,         // strength of the in-air levelling assist
   lift: 0.55,        // where tyre forces act, 0 = road, 1 = centre of mass (higher = harder to roll over)
-  yawDamp: 1,        // how strongly slides are calmed
+  yawDamp: 1.6,      // how strongly slides are calmed
 };
 export type Spec = typeof SPEC;
 
@@ -233,14 +236,15 @@ export class Truck {
       _v.crossVectors(this.ang, _r).add(this.vel);
       const vl = _v.dot(_f), vs = _v.dot(_s);
       const onRoad = T.nearest(w.contact.x, w.contact.z).d < 8;
-      const mu = (onRoad ? 1.12 : 0.92) * S.grip * (w.front ? S.frontGrip : 1);
+      const mu = (onRoad ? 1.12 : 0.92) * S.grip * (w.front ? S.frontGrip : S.rearGrip);
       const maxF = mu * Math.min(N, 11000);
 
       let Fl = 0;
       // 30/70 torque split, traction control keeps wheelspin mild
       const share = drive * (w.front ? 0.15 : 0.35);
-      Fl += Math.sign(share) * Math.min(Math.abs(share), 0.9 * maxF);
-      if (!w.front && Math.abs(share) > 0.9 * maxF) Fl += Math.sign(share) * 0.25 * maxF;
+      // traction control: better trucks keep more of the tyre for cornering
+      Fl += Math.sign(share) * Math.min(Math.abs(share), S.tc * maxF);
+      if (!w.front && Math.abs(share) > S.tc * maxF) Fl += Math.sign(share) * S.spin * maxF;
       if (brake > 0) { const bf = S.brake * brake * (w.front ? 0.6 : 0.4); Fl -= Math.max(-bf, Math.min(bf, vl * 6000)); }
       if (hold) Fl -= Math.max(-maxF, Math.min(maxF, vl * 5000));
       Fl -= vl * (onRoad ? 12 : 45);
