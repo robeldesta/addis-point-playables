@@ -6,6 +6,7 @@ import { Truck, type Input } from "./truck";
 import { TruckView } from "./model";
 import { Autopilot } from "./autopilot";
 import { Sfx } from "./sfx";
+import { STAGES, medalFor, MEDAL_ICON, type Stage } from "./stages";
 
 // Dust Runner: driving prototype. One long-travel trophy truck, one desert
 // loop with whoops, rollers and jumps. The question it answers: is the
@@ -26,8 +27,8 @@ const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147
 // ------------------------------------------------------------------
 // save
 // ------------------------------------------------------------------
-interface Save { bestLap: number; bestAir: number; laps: number }
-let save: Save = { bestLap: 0, bestAir: 0, laps: 0 };
+interface Save { bestLap: number; bestAir: number; laps: number; stages: Record<string, number> }
+let save: Save = { bestLap: 0, bestAir: 0, laps: 0, stages: {} };
 const persist = () => { P.save(GAME_ID, JSON.stringify(save)); };
 
 // ------------------------------------------------------------------
@@ -286,6 +287,21 @@ const _kq = new THREE.Quaternion(), _kax = new THREE.Vector3();
   scene.add(post, flag);
 }
 // start/finish arch + chevron boards before each jump
+let finishArch: THREE.Group;
+const finishPillars: Boulder[] = [];
+function placeFinish(k: number | null) {
+  if (k === null || ((k % terrain.count) + terrain.count) % terrain.count < 4) {
+    finishArch.visible = false;
+    for (const b of finishPillars) { b.x = b.z = 9999; }
+    return;
+  }
+  const s = terrain.sample(k);
+  finishArch.visible = true;
+  finishArch.position.set(s.x, s.y + 0.2, s.z);
+  finishArch.rotation.y = Math.atan2(s.tx, s.tz);
+  const span = TRACK_HALF_W + 2.2;
+  [1, -1].forEach((side, i) => { const b = finishPillars[i]; b.x = s.x + s.tz * side * span; b.z = s.z - s.tx * side * span; b.top = s.y + 7; });
+}
 function canvasTex(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void) {
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   draw(c.getContext("2d")!);
@@ -314,6 +330,10 @@ function canvasTex(w: number, h: number, draw: (g: CanvasRenderingContext2D) => 
   arch.position.set(s.x, s.y + 0.2, s.z);
   arch.rotation.y = head;
   scene.add(arch);
+  finishArch = arch.clone();
+  finishArch.visible = false;
+  scene.add(finishArch);
+  for (let i = 0; i < 2; i++) { const b = { x: 9999, z: 9999, r: 0.4, top: 0 }; finishPillars.push(b); boulders.push(b); }
 
   const chev = canvasTex(128, 128, (g) => {
     g.fillStyle = "#ffb300"; g.fillRect(0, 0, 128, 128);
@@ -500,17 +520,114 @@ function resetTruck() {
   pop("Reset", "");
 }
 
-function startDrive() {
+// ---- timed stages ----
+let stage: Stage | null = null;
+let stageIdx = 0;
+let phase: "count" | "run" | "done" = "run";
+let countT = 0, stageTime = 0, prog = 0, progK = 0, goal = 1, lastCount = 0;
+
+function enterDrive() {
   mode = "drive";
   document.body.classList.add("driving");
   $("menu").classList.remove("show");
-  placeAtTrack(terrain.count - 40);
-  lapRunning = false; lapTime = 0; nextCp = 1; lastQ = 3; lapN = 0; penalty = 0; focusOn = false;
+  $("results").classList.remove("show");
+  setFocus(false);
+  focus = 0; penalty = 0;
   camSnap = true;
   sfx.unlock();
   if (!usedTouch && !("ontouchstart" in window)) document.body.classList.add("kb");
 }
-$("go").addEventListener("click", startDrive);
+function startFree() {
+  enterDrive();
+  stage = null;
+  document.body.classList.remove("staged");
+  placeFinish(null);
+  placeAtTrack(terrain.count - 40);
+  lapRunning = false; lapTime = 0; nextCp = 1; lastQ = 3; lapN = 0;
+}
+function startStage(i: number) {
+  enterDrive();
+  stageIdx = i;
+  stage = STAGES[i];
+  document.body.classList.add("staged");
+  const k0 = Math.round(stage.start * terrain.count);
+  goal = Math.round(stage.laps * terrain.count);
+  placeFinish(k0 + goal);
+  placeAtTrack(k0 - 14);
+  for (const c of knocks) if (c.down) { c.down = false; c.tilt = 0; c.tiltV = 0; c.apply(_kq.identity()); }
+  progK = k0; prog = -14;
+  phase = "count"; countT = 3.2; lastCount = 4; stageTime = 0;
+  lapRunning = false;
+}
+const unlocked = (i: number) => i === 0 || !!medalFor(STAGES[i - 1], save.stages[STAGES[i - 1].id] ?? 0);
+function finishStage() {
+  if (!stage) return;
+  phase = "done";
+  const t = stageTime;
+  const prev = save.stages[stage.id] ?? 0;
+  const best = !prev || t < prev;
+  if (best) save.stages[stage.id] = t;
+  persist();
+  sfx.ding();
+  const m = medalFor(stage, t);
+  pop("FINISH", fmt2(t));
+  const st = stage;
+  window.setTimeout(() => {
+    if (stage !== st || phase !== "done") return;
+    $("rmedal").textContent = MEDAL_ICON[m] || "🏁";
+    $("rtitle").textContent = m ? `${m[0].toUpperCase()}${m.slice(1)} medal!` : "No medal";
+    $("rtime").textContent = fmt2(t);
+    $("rpen").textContent = penalty > 0.05 ? `includes +${penalty.toFixed(1)}s off the road` : "Clean run, no off-road time";
+    $("rbest").textContent = best ? "New best time!" : `Best ${fmt2(prev)}`;
+    $("rtargets").innerHTML = targetsHtml(st, save.stages[st.id]);
+    const nx = $("rnext") as HTMLButtonElement;
+    nx.style.display = stageIdx < STAGES.length - 1 ? "" : "none";
+    nx.disabled = !unlocked(stageIdx + 1);
+    nx.textContent = nx.disabled ? "Next stage 🔒 (get bronze)" : "Next stage";
+    $("results").classList.add("show");
+    document.body.classList.remove("driving");
+  }, 1400);
+}
+function targetsHtml(st: Stage, best?: number) {
+  const row = (m: "gold" | "silver" | "bronze") =>
+    `<span class="${best && best <= st[m] ? "got" : ""}">${MEDAL_ICON[m]} ${fmt2(st[m])}</span>`;
+  return row("gold") + row("silver") + row("bronze");
+}
+function showMenu() {
+  mode = "menu";
+  stage = null;
+  setFocus(false);
+  document.body.classList.remove("driving", "staged", "offtrack");
+  $("results").classList.remove("show");
+  placeFinish(null);
+  buildStageList();
+  $("menu").classList.add("show");
+  placeAtTrack(pilot.k);
+}
+function buildStageList() {
+  const list = $("stagelist");
+  list.innerHTML = "";
+  let medals = 0;
+  STAGES.forEach((st, i) => {
+    const best = save.stages[st.id] ?? 0;
+    const m = medalFor(st, best);
+    if (m) medals++;
+    const open = unlocked(i);
+    const b = document.createElement("button");
+    b.className = "stage" + (open ? "" : " locked");
+    b.innerHTML = `<b>${i + 1}. ${st.name}</b><span class="m">${open ? MEDAL_ICON[m] || "" : "🔒"}</span>` +
+      `<small>${open ? st.blurb : "Get bronze on the stage before"}</small>` +
+      `<small class="t">${best ? "Best " + fmt2(best) : "Gold " + fmt2(st.gold)}</small>`;
+    if (open) b.addEventListener("click", () => startStage(i));
+    list.appendChild(b);
+  });
+  $("medals").textContent = `${medals} / ${STAGES.length} stages medalled`;
+}
+$("free").addEventListener("click", startFree);
+$("rretry").addEventListener("click", () => { if (stage) startStage(stageIdx); });
+$("rnext").addEventListener("click", () => { if (unlocked(stageIdx + 1)) startStage(stageIdx + 1); });
+$("rmenu").addEventListener("click", showMenu);
+$("quit").addEventListener("pointerdown", (e) => { e.stopPropagation(); showMenu(); });
 
 let popTimer: number | undefined;
 function pop(big: string, small: string, cls = "") {
@@ -522,13 +639,21 @@ function pop(big: string, small: string, cls = "") {
   clearTimeout(popTimer);
   popTimer = window.setTimeout(() => { b.className = ""; s.className = ""; }, 1800);
 }
+const fmt2 = (t: number) => {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(2).padStart(5, "0")}`;
+};
 const fmt = (t: number) => {
   const m = Math.floor(t / 60), s = t - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 };
 
 function physicsStep(dt: number) {
-  if (mode === "drive" && !AUTO) readInput(dt, input);
+  if (mode === "drive" && !AUTO) {
+    readInput(dt, input);
+    if (stage && phase === "count") { input.throttle = 0; input.brake = 0; input.handbrake = true; }
+    if (stage && phase === "done") { input.throttle = 0; input.brake = 1; input.steer = 0; }
+  }
   else pilot.drive(truck, input, mode === "menu" ? 24 : 30);
   truck.step(dt, input, terrain);
   // boulders
@@ -637,6 +762,8 @@ function gameTick(dt: number) {
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
   pilot.k = near.k;
 
+  offTrack = near.d > TRACK_HALF_W + 3;
+  if (stage) { stageTick(dt, near); return; }
   // lap timing via quarter checkpoints
   const q = Math.floor((near.k / terrain.count) * 4) % 4;
   if (near.d < 30) {
@@ -656,11 +783,32 @@ function gameTick(dt: number) {
     lastQ = q;
   }
   // off the road: the clock runs double
-  offTrack = near.d > TRACK_HALF_W + 3;
   if (lapRunning) {
     lapTime += dt;
     if (offTrack) { lapTime += dt; penalty += dt; }
   }
+}
+
+function stageTick(dt: number, near: { k: number; d: number }) {
+  if (phase === "count") {
+    countT -= dt;
+    const c = Math.ceil(countT);
+    if (c !== lastCount && c >= 1 && c <= 3) { lastCount = c; pop(String(c), stage!.name); sfx.beep(false); }
+    if (countT <= 0) { phase = "run"; pop("GO!", ""); sfx.beep(true); }
+    return;
+  }
+  // progress along the road; big jumps in position (cutting across) don't count
+  if (near.d < 30) {
+    let dk = near.k - progK;
+    if (dk > terrain.count / 2) dk -= terrain.count;
+    if (dk < -terrain.count / 2) dk += terrain.count;
+    if (Math.abs(dk) < 60) prog += dk;
+    progK = near.k;
+  }
+  if (phase !== "run") return;
+  stageTime += dt;
+  if (offTrack) { stageTime += dt; penalty += dt; }
+  if (prog >= goal) finishStage();
 }
 
 // ------------------------------------------------------------------
@@ -716,17 +864,23 @@ function updateCamera(dt: number) {
 // ------------------------------------------------------------------
 // HUD
 // ------------------------------------------------------------------
+const progFill = $("progfill");
 const offEl = $("offtxt"), focusFill = $("focusfill"), focusBtn = $("focus");
 const spdEl = $("spdv"), lapEl = $("lap"), bestEl = $("best"), fpsEl = $("fps");
 let fpsAcc = 0, fpsN = 0;
 function hud(dt: number) {
   spdEl.textContent = String(Math.round(Math.abs(truck.speed) * 3.6));
-  lapEl.textContent = lapRunning ? fmt(lapTime) : "--:--";
-  document.body.classList.toggle("offtrack", mode === "drive" && offTrack && lapRunning);
+  if (stage) {
+    lapEl.textContent = fmt2(stageTime);
+    const next = stageTime <= stage.gold ? ["🥇", stage.gold] : stageTime <= stage.silver ? ["🥈", stage.silver] : stageTime <= stage.bronze ? ["🥉", stage.bronze] : null;
+    bestEl.textContent = next ? `${next[0]} ${fmt2(next[1] as number)}` : "No medal this run";
+    progFill.style.width = `${clamp(prog / goal, 0, 1) * 100}%`;
+  } else lapEl.textContent = lapRunning ? fmt(lapTime) : "--:--";
+  document.body.classList.toggle("offtrack", mode === "drive" && offTrack && (stage ? phase === "run" : lapRunning));
   offEl.textContent = `OFF TRACK · TIME x2  +${penalty.toFixed(1)}s`;
   focusFill.style.height = `${focus * 100}%`;
   focusBtn.classList.toggle("ready", focus >= 0.25 && !focusOn);
-  bestEl.textContent = save.bestLap ? `Best ${fmt(save.bestLap)}` : lapRunning ? "First lap" : "Cross the line to start";
+  if (!stage) bestEl.textContent = save.bestLap ? `Best ${fmt(save.bestLap)}` : lapRunning ? "First lap" : "Cross the line to start";
   if (DEBUG) {
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) { fpsEl.textContent = `${Math.round(fpsN / fpsAcc)} fps · gnd ${truck.grounded} · ${truck.wheels.map((w) => w.comp.toFixed(2)).join(" ")}`; fpsAcc = 0; fpsN = 0; }
@@ -771,7 +925,9 @@ async function boot() {
   if (DEBUG) { document.body.classList.add("debug"); Object.assign(window as any, { scene, camera, renderer, truck, knocks }); }
   placeAtTrack(0);
   for (let i = 0; i < 60; i++) physicsStep(DT); // settle the suspension
-  if (qs.has("drive")) startDrive();
+  buildStageList();
+  if (qs.has("drive")) startFree();
+  if (qs.has("stage")) startStage(+(qs.get("stage") || 0));
   last = performance.now();
   requestAnimationFrame(frame);
   P.firstFrameReady();

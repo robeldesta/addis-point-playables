@@ -1,12 +1,11 @@
 import type { Terrain } from "./terrain";
 import type { Truck, Input } from "./truck";
 
-const LAT = 4;
 // Drives the truck around the loop: used for the title-screen attract mode.
 export class Autopilot {
   k = 0;
   private curv: Float32Array;
-  constructor(private T: Terrain) {
+  constructor(private T: Terrain, private lat = 4) {
     const n = T.count;
     this.curv = new Float32Array(n);
     const span = 16;
@@ -27,7 +26,7 @@ export class Autopilot {
     // slow down for the sharpest bend in the next ~60 m
     let c = 0;
     for (let j = 0; j < 120; j += 4) c = Math.max(c, this.curv[(this.k + j) % T.count]);
-    const vmax = Math.min(maxSpeed, Math.sqrt(LAT / Math.max(c, 1e-4)));
+    const vmax = Math.min(maxSpeed, Math.sqrt(this.lat / Math.max(c, 1e-4)));
     out.steer = tr.grounded === 4 ? Math.max(-1, Math.min(1, -e * 1.6)) : 0;
     out.throttle = tr.speed < vmax ? 1 : 0;
     out.brake = tr.speed > vmax + 3 ? 1 : 0;

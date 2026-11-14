@@ -70,12 +70,41 @@
       #vig { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .25s;
         background: radial-gradient(ellipse at center, rgba(40,90,160,0) 45%, rgba(20,50,110,.55) 100%); }
       body.focusing #vig { opacity: 1; }
+      #quit { position: fixed; z-index: 4; top: max(12px, env(safe-area-inset-top)); right: 70px; width: 48px; height: 48px; border-radius: 14px;
+        border: 0; background: rgba(20,12,4,.38); color: #fff; font: 900 22px Arial; display: none; }
+      body.driving #quit { display: block; }
+      #prog { left: 50%; transform: translateX(-50%); top: calc(max(12px, env(safe-area-inset-top)) + 4px); width: min(34vw, 260px); height: 8px;
+        background: rgba(0,0,0,.3); border: 2px solid rgba(255,255,255,.85); border-radius: 6px; overflow: hidden; }
+      body:not(.staged) #prog { display: none !important; }
+      #prog i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #ffd54f, #ff7a2f); }
+      @media (orientation: portrait) { #prog { top: calc(max(12px, env(safe-area-inset-top)) + 52px); } }
+      #stagelist { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; width: min(640px, 94vw); margin-top: 14px; }
+      .stage { position: relative; text-align: left; border: 0; border-radius: 14px; padding: 9px 12px; background: #fff; color: #3a2210; cursor: pointer;
+        box-shadow: 0 4px 0 rgba(0,0,0,.2); font-family: Arial; }
+      .stage b { display: block; font-size: 15px; padding-right: 26px; }
+      .stage small { display: block; font-size: 11.5px; color: #8a6a50; margin-top: 2px; font-weight: 700; }
+      .stage small.t { color: #c2410c; }
+      .stage .m { position: absolute; right: 10px; top: 7px; font-size: 20px; }
+      .stage.locked { opacity: .55; cursor: default; }
+      .medals { margin-top: 8px; font-weight: 900; font-size: 13px; text-shadow: 0 1px 0 rgba(0,0,0,.4); }
+      .btn.alt { background: #fff3e6; color: #8a2a00; height: 46px; font-size: 18px; margin-top: 10px; }
+      .card { background: #fff; color: #3a2210; border-radius: 20px; padding: 16px 18px; width: min(340px, calc(100vw - 32px)); box-shadow: 0 8px 0 rgba(0,0,0,.25); }
+      .card .btn { width: 100%; margin-top: 10px; }
+      .card h2 { margin: 2px 0; font-size: 22px; }
+      .medal { font-size: 56px; line-height: 1.1; }
+      .rtime { font-size: 40px; font-weight: 900; color: #c2410c; font-variant-numeric: tabular-nums; }
+      .rsub { font-size: 13px; font-weight: 700; color: #8a6a50; margin-top: 2px; }
+      .rsub.strong { color: #3a2210; font-weight: 900; }
+      .targets { display: flex; justify-content: center; gap: 10px; margin-top: 10px; font-size: 13px; font-weight: 800; color: #b0a090; }
+      .targets .got { color: #3a2210; }
+      @media (max-height: 500px) { .title { font-size: 52px; } .tag { margin-top: 6px; font-size: 13px; } .how { display: none; } #stagelist { margin-top: 8px; }
+        .medal { font-size: 36px; } .rtime { font-size: 30px; } .card { padding: 10px 14px; } .card .btn { height: 40px; margin-top: 6px; font-size: 17px; } }
       .pedal.on { transform: scale(.93); filter: brightness(1.15); }
       #keys { position: fixed; z-index: 2; right: 14px; top: 70px; color: #fff; font: 800 12px Arial; text-align: right; text-shadow: 0 1px 0 rgba(0,0,0,.5);
         display: none; line-height: 1.6; pointer-events: none; }
       body.driving.kb #keys { display: block; }
 
-      .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 5;
+      .screen { overflow-y: auto; position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: safe center; z-index: 5;
         background: linear-gradient(rgba(60,25,0,.05), rgba(60,25,0,.35)); color: #fff; text-align: center; padding: 16px; box-sizing: border-box; }
       .screen.show { display: flex; }
       .title { font-size: min(17vw, 96px); font-weight: 900; color: #fff; -webkit-text-stroke: 4px #8a2a00; line-height: .88;
@@ -98,6 +127,8 @@
     <div id="vig"></div>
     <div id="off"><span id="offtxt"></span></div>
     <button id="reset" aria-label="Reset truck">↺</button>
+    <button id="quit" aria-label="Back to stages">☰</button>
+    <div class="hud" id="prog"><i id="progfill"></i></div>
     <button id="focus" aria-label="Focus slow motion"><div id="focusfill"></div><span>FOCUS</span></button>
     <div id="steerzone"></div>
     <div id="steerhint">◀ SLIDE TO STEER ▶</div>
@@ -109,8 +140,23 @@
     <div class="screen show" id="menu">
       <div class="title">DUST<br><b>RUNNER</b></div>
       <div class="tag">Long-travel trophy truck. Open desert. Big air.</div>
-      <button class="btn" id="go">DRIVE</button>
+      <div id="stagelist"></div>
+      <div class="medals" id="medals"></div>
+      <button class="btn alt" id="free">Free roam</button>
       <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake, F for focus<br>Big air fills FOCUS: slow time to line up landings. Off the road, the clock runs double.</div>
+    </div>
+    <div class="screen" id="results">
+      <div class="card">
+        <div class="medal" id="rmedal"></div>
+        <h2 id="rtitle"></h2>
+        <div class="rtime" id="rtime"></div>
+        <div class="rsub" id="rpen"></div>
+        <div class="rsub strong" id="rbest"></div>
+        <div class="targets" id="rtargets"></div>
+        <button class="btn" id="rretry">Retry</button>
+        <button class="btn alt" id="rnext">Next stage</button>
+        <button class="btn alt" id="rmenu">Stages</button>
+      </div>
     </div>
     <script type="module" src="./main.ts"></script>
   </body>
