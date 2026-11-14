@@ -54,6 +54,22 @@
         #spd { bottom: auto; top: calc(max(12px, env(safe-area-inset-top)) + 2px); }
         #spdv { font-size: 38px; }
       }
+      #off { position: fixed; z-index: 3; left: 0; right: 0; top: 13%; text-align: center; pointer-events: none; display: none; }
+      #off span { display: inline-block; background: #d32f2f; color: #fff; font: 900 15px Arial; padding: 7px 14px; border-radius: 12px;
+        box-shadow: 0 4px 0 rgba(0,0,0,.25); animation: throb .5s ease-in-out infinite; }
+      body.offtrack #off { display: block; }
+      @keyframes throb { 50% { transform: scale(1.07); } }
+      #focus { position: fixed; z-index: 4; right: 30px; bottom: calc(max(18px, env(safe-area-inset-bottom)) + 128px); width: 78px; height: 78px;
+        border-radius: 50%; border: 3px solid rgba(255,255,255,.85); background: rgba(20,40,90,.45); color: #fff; font: 900 12px Arial; overflow: hidden;
+        display: none; padding: 0; touch-action: none; }
+      body.driving #focus { display: block; }
+      #focusfill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%; background: linear-gradient(#7fd8ff, #2f7bff); }
+      #focus span { position: relative; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+      #focus.ready { box-shadow: 0 0 14px 3px rgba(120,210,255,.9); }
+      body.focusing #focus { border-color: #fff; box-shadow: 0 0 20px 6px rgba(120,210,255,1); }
+      #vig { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .25s;
+        background: radial-gradient(ellipse at center, rgba(40,90,160,0) 45%, rgba(20,50,110,.55) 100%); }
+      body.focusing #vig { opacity: 1; }
       .pedal.on { transform: scale(.93); filter: brightness(1.15); }
       #keys { position: fixed; z-index: 2; right: 14px; top: 70px; color: #fff; font: 800 12px Arial; text-align: right; text-shadow: 0 1px 0 rgba(0,0,0,.5);
         display: none; line-height: 1.6; pointer-events: none; }
@@ -76,10 +92,13 @@
     <div class="hud" id="lapbox"><div id="lap">--:--</div><div id="best"></div></div>
     <div class="hud" id="spd"><span id="spdv">0</span><small>KM/H</small></div>
     <div class="hud" id="fps"></div>
-    <div class="hud" id="keys">↑ gas · ↓ brake/reverse<br>← → steer · space handbrake<br>R reset</div>
+    <div class="hud" id="keys">↑ gas · ↓ brake/reverse<br>← → steer · space handbrake<br>F focus · R reset</div>
     <div id="big"></div>
     <div id="sub"></div>
+    <div id="vig"></div>
+    <div id="off"><span id="offtxt"></span></div>
     <button id="reset" aria-label="Reset truck">↺</button>
+    <button id="focus" aria-label="Focus slow motion"><div id="focusfill"></div><span>FOCUS</span></button>
     <div id="steerzone"></div>
     <div id="steerhint">◀ SLIDE TO STEER ▶</div>
     <div id="ring"></div>
@@ -91,7 +110,7 @@
       <div class="title">DUST<br><b>RUNNER</b></div>
       <div class="tag">Long-travel trophy truck. Open desert. Big air.</div>
       <button class="btn" id="go">DRIVE</button>
-      <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake</div>
+      <div class="how">Phone: slide left thumb to steer, GAS and BRAKE on the right<br>Keyboard: arrows or WASD, space for handbrake, F for focus<br>Big air fills FOCUS: slow time to line up landings. Off the road, the clock runs double.</div>
     </div>
     <script type="module" src="./main.ts"></script>
   </body>

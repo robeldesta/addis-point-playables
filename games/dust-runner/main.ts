@@ -413,6 +413,7 @@ window.addEventListener("keydown", (e) => {
   keys.add(e.code);
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   if (e.code === "KeyR" && mode === "drive") resetTruck();
+  if ((e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") && !e.repeat) setFocus(!focusOn);
   sfx.unlock();
 });
 window.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -454,6 +455,7 @@ function pedal(el: HTMLElement, key: "gas" | "brake") {
 }
 pedal(gasBtn, "gas");
 pedal(brakeBtn, "brake");
+$("focus").addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); sfx.unlock(); setFocus(!focusOn); });
 $("reset").addEventListener("pointerdown", (e) => { e.stopPropagation(); resetTruck(); });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -478,10 +480,19 @@ type Mode = "menu" | "drive";
 let mode: Mode = "menu";
 const input: Input = { throttle: 0, brake: 0, steer: 0, handbrake: false };
 let lapTime = 0, lapRunning = false, nextCp = 1, lastQ = 3, lapN = 0;
+let penalty = 0, offTrack = false;
+// focus: slow motion earned by air time
+let focus = 0, focusOn = false, timeScale = 1;
+const FOCUS_SCALE = 0.35, FOCUS_DRAIN = 0.3, FOCUS_FILL = 0.2; // drain per real second, fill per second of air
 let flipTimer = 0, stuckTimer = 0;
 let launchX = 0, launchZ = 0, wasAir = false, airPeak = 0;
 let shake = 0;
 
+function setFocus(on: boolean) {
+  if (on && (focus < 0.1 || mode !== "drive")) return;
+  focusOn = on;
+  document.body.classList.toggle("focusing", on);
+}
 function resetTruck() {
   const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
   placeAtTrack(near.k - 12);
@@ -494,7 +505,7 @@ function startDrive() {
   document.body.classList.add("driving");
   $("menu").classList.remove("show");
   placeAtTrack(terrain.count - 40);
-  lapRunning = false; lapTime = 0; nextCp = 1; lastQ = 3; lapN = 0;
+  lapRunning = false; lapTime = 0; nextCp = 1; lastQ = 3; lapN = 0; penalty = 0; focusOn = false;
   camSnap = true;
   sfx.unlock();
   if (!usedTouch && !("ontouchstart" in window)) document.body.classList.add("kb");
@@ -598,6 +609,7 @@ function gameTick(dt: number) {
   const inAir = truck.grounded === 0;
   if (inAir && !wasAir) { launchX = truck.pos.x; launchZ = truck.pos.z; airPeak = 0; }
   if (inAir) airPeak = Math.max(airPeak, truck.airTime);
+  if (inAir && truck.airTime > 0.15 && mode === "drive" && !focusOn) focus = Math.min(1, focus + FOCUS_FILL * dt);
   if (!inAir && wasAir) {
     const dist = Math.hypot(truck.pos.x - launchX, truck.pos.z - launchZ);
     const hard = truck.bottomOut > 3 || truck.impact > 4;
@@ -636,13 +648,19 @@ function gameTick(dt: number) {
         if (best) save.bestLap = lapTime;
         persist();
         sfx.ding();
-        pop(`LAP ${fmt(lapTime)}`, best ? "New best lap!" : `Best ${fmt(save.bestLap)}`);
+        const pen = penalty > 0.05 ? ` · incl. +${penalty.toFixed(1)}s off track` : "";
+        pop(`LAP ${fmt(lapTime)}`, (best ? "New best lap!" : `Best ${fmt(save.bestLap)}`) + pen);
       } else if (!lapRunning) pop("GO!", "Lap timer started");
-      lapRunning = true; lapTime = 0; nextCp = 1;
+      lapRunning = true; lapTime = 0; nextCp = 1; penalty = 0;
     } else if (q === nextCp) nextCp++;
     lastQ = q;
   }
-  if (lapRunning) lapTime += dt;
+  // off the road: the clock runs double
+  offTrack = near.d > TRACK_HALF_W + 3;
+  if (lapRunning) {
+    lapTime += dt;
+    if (offTrack) { lapTime += dt; penalty += dt; }
+  }
 }
 
 // ------------------------------------------------------------------
@@ -688,7 +706,7 @@ function updateCamera(dt: number) {
     shake *= Math.exp(-dt * 6);
   }
   camera.lookAt(camLook);
-  const fov = (portrait ? 70 : 60) + Math.min(14, spd * 0.35);
+  const fov = (portrait ? 70 : 60) + Math.min(14, spd * 0.35) - (1 - timeScale) * 9;
   if (Math.abs(camera.fov - fov) > 0.05) { camera.fov += (fov - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
   sun.position.copy(truck.pos).addScaledVector(SUN_DIR, 60);
   sun.target.position.copy(truck.pos);
@@ -698,12 +716,17 @@ function updateCamera(dt: number) {
 // ------------------------------------------------------------------
 // HUD
 // ------------------------------------------------------------------
+const offEl = $("offtxt"), focusFill = $("focusfill"), focusBtn = $("focus");
 const spdEl = $("spdv"), lapEl = $("lap"), bestEl = $("best"), fpsEl = $("fps");
 let fpsAcc = 0, fpsN = 0;
 function hud(dt: number) {
   spdEl.textContent = String(Math.round(Math.abs(truck.speed) * 3.6));
   lapEl.textContent = lapRunning ? fmt(lapTime) : "--:--";
-  bestEl.textContent = save.bestLap ? `Best ${fmt(save.bestLap)}` : "Cross the line to start";
+  document.body.classList.toggle("offtrack", mode === "drive" && offTrack && lapRunning);
+  offEl.textContent = `OFF TRACK · TIME x2  +${penalty.toFixed(1)}s`;
+  focusFill.style.height = `${focus * 100}%`;
+  focusBtn.classList.toggle("ready", focus >= 0.25 && !focusOn);
+  bestEl.textContent = save.bestLap ? `Best ${fmt(save.bestLap)}` : lapRunning ? "First lap" : "Cross the line to start";
   if (DEBUG) {
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) { fpsEl.textContent = `${Math.round(fpsN / fpsAcc)} fps · gnd ${truck.grounded} · ${truck.wheels.map((w) => w.comp.toFixed(2)).join(" ")}`; fpsAcc = 0; fpsN = 0; }
@@ -720,6 +743,10 @@ function frame(now: number) {
   last = now;
   if (paused) return;
   dt = Math.min(dt, 0.1);
+  if (focusOn) { focus -= FOCUS_DRAIN * dt; if (focus <= 0) { focus = 0; setFocus(false); } }
+  timeScale += ((focusOn ? FOCUS_SCALE : 1) - timeScale) * Math.min(1, dt * 8);
+  const realDt = dt;
+  dt *= timeScale;
   acc += dt;
   let steps = 0;
   while (acc >= DT && steps < 10) { physicsStep(DT); acc -= DT; steps++; }
@@ -727,12 +754,12 @@ function frame(now: number) {
   gameTick(dt);
   updateDust(dt);
   view.update(truck, input.brake > 0 && truck.speed > 0.5);
-  updateCamera(dt);
+  updateCamera(realDt);
   if (mode === "drive") {
     const slip = truck.wheels.reduce((a, w) => a + w.slip, 0);
-    sfx.drive(truck.rpm, input.throttle, truck.vel.length(), truck.grounded, slip);
+    sfx.drive(truck.rpm * (0.55 + 0.45 * timeScale), input.throttle, truck.vel.length() * timeScale, truck.grounded, slip * timeScale);
   } else sfx.mute();
-  hud(dt);
+  hud(realDt);
   renderer.render(scene, camera);
 }
 
