@@ -818,6 +818,9 @@ async function boot() {
     if (!save.places) save.places = {};
     if (!save.race) save.race = {};
     if (!save.garage) save.garage = { cash: 0, owned: ["rookie"], cur: "rookie", lv: {} };
+    // testing aid: ?cash=100000 tops the wallet up to that amount
+    const top = Number(qs.get("cash"));
+    if (top > save.garage.cash) { save.garage.cash = top; persist(); }
   } catch { /* fresh save */ }
   applyTruck();
   if (DEBUG) document.body.classList.add("debug");
