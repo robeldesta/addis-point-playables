@@ -75,6 +75,14 @@ export class Sfx {
     const g2 = ctx.createGain(); g2.gain.setValueAtTime(0.35 * v, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
     s.connect(f).connect(g2).connect(this.master!); s.start(t, Math.random()); s.stop(t + 0.3);
   }
+  beep(go: boolean) {
+    const ctx = this.ctx; if (!ctx || !this.enabled || ctx.state !== "running") return;
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "square"; o.frequency.value = go ? 880 : 440;
+    g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + (go ? 0.5 : 0.2));
+    o.connect(g).connect(this.master!); o.start(t); o.stop(t + 0.55);
+  }
   ding() {
     const ctx = this.ctx; if (!ctx || !this.enabled || ctx.state !== "running") return;
     const t = ctx.currentTime;
