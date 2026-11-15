@@ -76,6 +76,10 @@
       #quit { position: fixed; z-index: 4; top: max(12px, env(safe-area-inset-top)); right: 70px; width: 48px; height: 48px; border-radius: 14px;
         border: 0; background: rgba(20,12,4,.38); color: #fff; font: 900 22px Arial; display: none; }
       body.driving #quit { display: block; }
+      #mus { position: fixed; z-index: 6; top: max(12px, env(safe-area-inset-top)); right: 14px; width: 48px; height: 48px; border-radius: 14px;
+        border: 0; background: rgba(20,12,4,.38); color: #fff; font: 900 24px Arial; }
+      body.driving #mus { right: 126px; }
+      #mus.off { opacity: .45; text-decoration: line-through; }
       #prog { left: 50%; transform: translateX(-50%); top: calc(max(12px, env(safe-area-inset-top)) + 4px); width: min(34vw, 260px); height: 8px;
         background: rgba(0,0,0,.3); border: 2px solid rgba(255,255,255,.85); border-radius: 6px; overflow: hidden; }
       body:not(.staged) #prog { display: none !important; }
@@ -155,6 +159,7 @@
     <div id="off"><span id="offtxt"></span></div>
     <button id="reset" aria-label="Reset truck">↺</button>
     <button id="quit" aria-label="Back to stages">☰</button>
+    <button id="mus" aria-label="Music on or off">♪</button>
     <div class="hud" id="prog"><i id="progfill"></i></div>
     <canvas class="hud" id="mmap"></canvas>
     <button id="focus" aria-label="Focus slow motion"><div id="focusfill"></div><span>FOCUS</span></button>

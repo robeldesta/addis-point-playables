@@ -40,6 +40,7 @@ export class Sfx {
     this.wind = loop("lowpass", 500);
   }
   setEnabled(on: boolean) { this.enabled = on; if (this.master) this.master.gain.value = on ? 0.8 : 0; }
+  get audio() { return this.ctx && this.master ? { ctx: this.ctx, out: this.master } : null; }
   suspend() { this.ctx?.suspend().catch(() => {}); }
   resume() { this.ctx?.resume().catch(() => {}); }
 
