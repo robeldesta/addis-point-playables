@@ -79,6 +79,12 @@
       #mus { position: fixed; z-index: 6; top: max(12px, env(safe-area-inset-top)); right: 14px; width: 48px; height: 48px; border-radius: 14px;
         border: 0; background: rgba(20,12,4,.38); color: #fff; font: 900 24px Arial; }
       body.driving #mus { right: 126px; }
+      #cam { position: fixed; z-index: 6; top: max(12px, env(safe-area-inset-top)); right: 182px; width: 48px; height: 48px; border-radius: 14px;
+        border: 0; background: rgba(20,12,4,.38); color: #fff; font: 900 22px Arial; display: none; }
+      body.driving #cam { display: block; }
+      #camtag { position: fixed; z-index: 5; left: 50%; top: calc(max(12px, env(safe-area-inset-top)) + 22px); transform: translateX(-50%);
+        color: #fff; font: 900 14px Arial; background: rgba(20,12,4,.5); padding: 5px 12px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+      #camtag.show { opacity: 1; }
       #mus.off { opacity: .45; text-decoration: line-through; }
       #prog { left: 50%; transform: translateX(-50%); top: calc(max(12px, env(safe-area-inset-top)) + 4px); width: min(34vw, 260px); height: 8px;
         background: rgba(0,0,0,.3); border: 2px solid rgba(255,255,255,.85); border-radius: 6px; overflow: hidden; }
@@ -152,7 +158,7 @@
     <div class="hud" id="lapbox"><div id="lap">--:--</div><div id="best"></div></div>
     <div class="hud" id="spd"><span id="spdv">0</span><small>KM/H</small></div>
     <div class="hud" id="fps"></div>
-    <div class="hud" id="keys">↑ gas · ↓ brake/reverse<br>← → steer · space handbrake<br>F focus · R reset</div>
+    <div class="hud" id="keys">↑ gas · ↓ brake/reverse<br>← → steer · space handbrake<br>F focus · R reset<br>C camera · V jump cam</div>
     <div id="big"></div>
     <div id="sub"></div>
     <div id="vig"></div>
@@ -160,6 +166,8 @@
     <button id="reset" aria-label="Reset truck">↺</button>
     <button id="quit" aria-label="Back to stages">☰</button>
     <button id="mus" aria-label="Music on or off">♪</button>
+    <button id="cam" aria-label="Change camera">📷</button>
+    <div id="camtag"></div>
     <div class="hud" id="prog"><i id="progfill"></i></div>
     <canvas class="hud" id="mmap"></canvas>
     <button id="focus" aria-label="Focus slow motion"><div id="focusfill"></div><span>FOCUS</span></button>
