@@ -120,7 +120,7 @@ function loadWorld(i: number) {
   if (BIOMES[i].stadium) {
     RIVALS.forEach(([name, livery, cap, lat]) => {
       const r = makeRival(terrain, name, livery, cap, lat);
-      const v = new TruckView({ livery, accent: 0xffffff, number: String(20 + rivals.length * 7) });
+      const v = new TruckView({ livery, accent: 0xffffff, number: String(20 + rivals.length * 7) }, "lo");
       rivals.push(r); rivalViews.push(v); scene.add(v.root);
     });
     lapC = new LapCounter(terrain, 0);
