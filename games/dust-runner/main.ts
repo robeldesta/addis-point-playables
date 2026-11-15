@@ -223,6 +223,7 @@ let musicStarted = false;
 const musBtn = $("mus");
 music.on = !save.musicOff;
 musBtn.classList.toggle("off", !music.on);
+$("cam").addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); cycleView(); });
 musBtn.addEventListener("pointerdown", (e) => {
   e.stopPropagation(); e.preventDefault(); sfx.unlock();
   music.setOn(!music.on); save.musicOff = !music.on; persist();
@@ -247,6 +248,8 @@ window.addEventListener("keydown", (e) => {
   keys.add(e.code);
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
   if (e.code === "KeyR" && mode === "drive") resetTruck();
+  if (e.code === "KeyC" && !e.repeat) cycleView();
+  if (e.code === "KeyV" && !e.repeat) toggleJumpCam();
   if ((e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") && !e.repeat) setFocus(!focusOn);
   sfx.unlock();
 });
@@ -746,7 +749,46 @@ const camPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 let camSnap = true;
 const _v = new THREE.Vector3(), _w = new THREE.Vector3();
+// views: C cycles, V toggles the cinematic jump cam
+const VIEWS = ["Chase", "Far chase", "Hood", "Bumper", "TV"] as const;
+let view_i = 0, jumpCam = true;
+let camMode: "chase" | "air" | "tv" = "chase";
+const anchor = new THREE.Vector3();
+let anchorK = -1, landT = 0, tagT = 0;
+const camUp = new THREE.Vector3(0, 1, 0);
+const _u = new THREE.Vector3(), _s = new THREE.Vector3();
+function camTag(text: string) {
+  const el = $("camtag"); el.textContent = text; el.classList.add("show"); tagT = 1.6;
+}
+function cycleView() {
+  view_i = (view_i + 1) % VIEWS.length; camMode = "chase"; anchorK = -1;
+  camTag(`📷 ${VIEWS[view_i]}`);
+}
+function toggleJumpCam() { jumpCam = !jumpCam; camTag(jumpCam ? "🎬 Jump cam on" : "🎬 Jump cam off"); if (!jumpCam && camMode === "air") camMode = "chase"; }
+/** a fixed trackside camera ahead of the truck */
+function placeTv(k: number) {
+  const n = terrain.count;
+  let kk = k + 55 + Math.floor(Math.random() * 25);
+  kk = terrain.loop ? ((kk % n) + n) % n : Math.min(n - 1, kk);
+  const p = terrain.sample(kk), side = Math.random() < 0.5 ? 1 : -1;
+  const off = terrain.routeW + 7 + Math.random() * 8;
+  anchor.set(p.x + p.tz * off * side, 0, p.z - p.tx * off * side);
+  anchor.y = terrain.height(anchor.x, anchor.z) + 2.5 + Math.random() * 3;
+  anchorK = kk;
+}
+function aimAt(pos: THREE.Vector3, look: THREE.Vector3, up: THREE.Vector3, fov: number, dt: number, snapFov = false) {
+  camera.position.copy(pos);
+  if (shake > 0.01) {
+    camera.position.x += (Math.random() - 0.5) * shake * 0.35;
+    camera.position.y += (Math.random() - 0.5) * shake * 0.35;
+    shake *= Math.exp(-dt * 6);
+  }
+  camera.up.copy(up);
+  camera.lookAt(look);
+  if (Math.abs(camera.fov - fov) > 0.05) { camera.fov += (fov - camera.fov) * (snapFov ? 1 : Math.min(1, dt * 3)); camera.updateProjectionMatrix(); }
+}
 function updateCamera(dt: number) {
+  if (tagT > 0 && (tagT -= dt) <= 0) $("camtag").classList.remove("show");
   const fw = truck.forward(_v);
   const flatF = _w.set(fw.x, 0, fw.z);
   if (flatF.lengthSq() < 0.05 || truck.isUpsideDown()) flatF.set(truck.vel.x, 0, truck.vel.z);
@@ -757,8 +799,67 @@ function updateCamera(dt: number) {
   }
   const portrait = viewH > viewW;
   const spd = Math.abs(truck.speed);
-  const dist = (portrait ? 9.5 : 8) + spd * 0.06;
-  const height = (portrait ? 3.9 : 3.2) + spd * 0.015;
+  const slowFov = (1 - timeScale) * 9;
+  const view = VIEWS[view_i];
+
+  // cinematic jump cam: a low trackside shot of a big jump, held until the landing
+  const hAir = truck.pos.y - terrain.height(truck.pos.x, truck.pos.z);
+  if (jumpCam && camMode !== "air" && mode === "drive" && !camSnap && truck.grounded === 0 && truck.airTime > 0.18 && hAir > 2.2 && spd > 13 && truck.vel.y > -2) {
+    camMode = "air"; landT = 0;
+    const hv = _s.set(truck.vel.x, 0, truck.vel.z).normalize();
+    const side = Math.random() < 0.5 ? 1 : -1;
+    anchor.copy(truck.pos).addScaledVector(hv, spd * 0.55);
+    anchor.x += -hv.z * side * 10; anchor.z += hv.x * side * 10;
+    anchor.y = Math.max(terrain.height(anchor.x, anchor.z) + 1.2, truck.pos.y - hAir + 1.2);
+  }
+  if (camMode === "air") {
+    landT = truck.grounded ? landT + dt : 0;
+    const d = anchor.distanceTo(truck.pos);
+    if (landT > 0.45 || d > 70 || truck.isUpsideDown()) {
+      camMode = view === "TV" ? "tv" : "chase"; anchorK = -1;
+      camPos.copy(anchor);
+    } else {
+      camLook.copy(truck.pos); camLook.y += 0.6;
+      aimAt(anchor, camLook, camUp.set(0, 1, 0), clamp(2 * Math.atan(7 / Math.max(6, d)) * 180 / Math.PI, 22, 62) - slowFov, dt, true);
+      return finishCam();
+    }
+  }
+
+  if (view === "Hood" || view === "Bumper") {
+    const q = truck.q;
+    const pos = view === "Hood" ? _s.set(0, 1.75, 0.3) : _s.set(0, 0.55, 2.7);
+    pos.applyQuaternion(q).add(truck.pos);
+    const look = _u.set(0, view === "Hood" ? 1.2 : 0.6, 20).applyQuaternion(q).add(truck.pos);
+    camUp.lerp(truck.up(_v), 1 - Math.exp(-dt * 6)).normalize();
+    camPos.copy(pos); camLook.copy(look);
+    aimAt(pos, look, camUp, (portrait ? 80 : 70) + Math.min(12, spd * 0.3) - slowFov, dt);
+    camSnap = false;
+    return finishCam();
+  }
+  camUp.set(0, 1, 0);
+
+  if (view === "TV") {
+    const near = terrain.nearest(truck.pos.x, truck.pos.z, pilot.k);
+    const d = anchor.distanceTo(truck.pos);
+    // pass the camera (or lose sight of it) and cut to the next one
+    let passed = false;
+    if (anchorK >= 0) {
+      let dk = near.k - anchorK;
+      if (terrain.loop) { const n = terrain.count; dk = ((dk % n) + n + n / 2) % n - n / 2; }
+      passed = dk > 18;
+    }
+    if (camSnap || anchorK < 0 || passed || d > 110) placeTv(near.k);
+    camLook.copy(truck.pos); camLook.y += 0.8;
+    const dd = anchor.distanceTo(truck.pos);
+    camPos.copy(anchor);
+    aimAt(anchor, camLook, camUp, clamp(2 * Math.atan(9 / Math.max(5, dd)) * 180 / Math.PI, 14, 65) - slowFov, dt, true);
+    camSnap = false;
+    return finishCam();
+  }
+
+  const far = view === "Far chase";
+  const dist = (portrait ? 9.5 : 8) * (far ? 1.7 : 1) + spd * 0.06;
+  const height = (portrait ? 3.9 : 3.2) * (far ? 1.8 : 1) + spd * 0.015;
   const target = _v.copy(truck.pos).addScaledVector(camDir, -dist);
   target.y = truck.pos.y + height;
   const gy = terrain.height(target.x, target.z) + 1.6;
@@ -774,15 +875,10 @@ function updateCamera(dt: number) {
   look.y = truck.pos.y + 0.9;
   if (camSnap) camLook.copy(look); else camLook.lerp(look, 1 - Math.exp(-dt * 10));
   camSnap = false;
-  camera.position.copy(camPos);
-  if (shake > 0.01) {
-    camera.position.x += (Math.random() - 0.5) * shake * 0.35;
-    camera.position.y += (Math.random() - 0.5) * shake * 0.35;
-    shake *= Math.exp(-dt * 6);
-  }
-  camera.lookAt(camLook);
-  const fov = (portrait ? 70 : 60) + Math.min(14, spd * 0.35) - (1 - timeScale) * 9;
-  if (Math.abs(camera.fov - fov) > 0.05) { camera.fov += (fov - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
+  aimAt(camPos, camLook, camUp, (portrait ? 70 : 60) + Math.min(14, spd * 0.35) - slowFov, dt);
+  finishCam();
+}
+function finishCam() {
   sun.position.copy(truck.pos).addScaledVector(SUN_DIR, 60);
   sun.target.position.copy(truck.pos);
   dustMat.uniforms.uScale.value = (viewH * renderer.getPixelRatio()) / (2 * Math.tan((camera.fov * Math.PI) / 360));
