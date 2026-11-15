@@ -1,4 +1,5 @@
 import { MiniMap } from "./minimap";
+import { Music } from "./music";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as P from "../../src/platform/platform";
@@ -27,7 +28,7 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 // save
 // ------------------------------------------------------------------
 interface Garage { cash: number; owned: string[]; cur: string; lv: Record<string, Levels> }
-interface Save { bestAir: number; places: Record<string, number>; race: Record<string, { pos: number; time: number }>; garage: Garage }
+interface Save { bestAir: number; places: Record<string, number>; race: Record<string, { pos: number; time: number }>; garage: Garage; musicOff?: boolean }
 let save: Save = { bestAir: 0, places: {}, race: {}, garage: { cash: 0, owned: ["rookie"], cur: "rookie", lv: {} } };
 const persist = () => { P.save(GAME_ID, JSON.stringify(save)); };
 
@@ -217,6 +218,16 @@ function applyTruck() {
 const sfx = new Sfx();
 let paused = false;
 P.onAudioChange((on) => sfx.setEnabled(on));
+const music = new Music(() => sfx.audio);
+let musicStarted = false;
+const musBtn = $("mus");
+music.on = !save.musicOff;
+musBtn.classList.toggle("off", !music.on);
+musBtn.addEventListener("pointerdown", (e) => {
+  e.stopPropagation(); e.preventDefault(); sfx.unlock();
+  music.setOn(!music.on); save.musicOff = !music.on; persist();
+  musBtn.classList.toggle("off", !music.on);
+});
 sfx.setEnabled(P.isAudioEnabled());
 P.onPause(() => { paused = true; sfx.suspend(); });
 P.onResume(() => { paused = false; sfx.resume(); });
@@ -839,6 +850,8 @@ function frame(now: number) {
     const slip = truck.wheels.reduce((a, w) => a + w.slip, 0);
     sfx.drive(truck.rpm * (0.55 + 0.45 * timeScale), input.throttle, truck.vel.length() * timeScale, truck.grounded, slip * timeScale);
   } else sfx.mute();
+  if (!musicStarted && sfx.audio) { musicStarted = true; music.start(); }
+  music.mix(mode === "drive", focusOn);
   hud(realDt);
   renderer.render(scene, camera);
 }
@@ -854,6 +867,7 @@ async function boot() {
     const top = Number(qs.get("cash"));
     if (top > save.garage.cash) { save.garage.cash = top; persist(); }
   } catch { /* fresh save */ }
+  music.setOn(!save.musicOff); musBtn.classList.toggle("off", !music.on);
   applyTruck();
   if (DEBUG) document.body.classList.add("debug");
   let first = 0;
