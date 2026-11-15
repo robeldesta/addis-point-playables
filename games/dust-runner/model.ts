@@ -1,6 +1,34 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { SPEC, type Truck } from "./truck";
+import hiUrl from "./truck-hi.glb?url";
+import loUrl from "./truck-lo.glb?url";
+
+// Body model: "Toyota Tacoma Baja Truck" by DRIVER-FIRE (sketchfab.com/DRIVER-FIRE), CC-BY-4.0,
+// slimmed for phones, maker's grille lettering and original wheels removed, repainted in our livery.
+const bodies: Record<string, Promise<THREE.Object3D>> = {};
+function loadBody(url: string) {
+  return (bodies[url] ??= new Promise((res, rej) => {
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(url, (g) => {
+      g.scene.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.computeVertexNormals(); });
+      res(g.scene);
+    }, undefined, rej);
+  }));
+}
+const PAINT = new Set(["color_6383466"]);
+const LIGHTS = new Set(["color_16768282"]);
+function numberTex(num: string, accent: number) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 200;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#ffffff"; g.beginPath(); g.roundRect(6, 6, 244, 188, 26); g.fill();
+  g.lineWidth = 10; g.strokeStyle = "#" + accent.toString(16).padStart(6, "0"); g.stroke();
+  g.fillStyle = "#111"; g.font = "900 150px Arial"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(num, 128, 108);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
 
 // Trophy truck built in code, our own design: fibreglass body over a tube
 // chassis with the nose cut open, full roll cage, coilover + bypass shocks
@@ -189,7 +217,7 @@ export class TruckView {
   private whipV = 0;
   private whipA = 0;
 
-  constructor(lookIn: Look | number = 0xd32f2f) {
+  constructor(lookIn: Look | number = 0xd32f2f, lod: "hi" | "lo" = "hi") {
     const look: Look = typeof lookIn === "number" ? { livery: lookIn } : lookIn;
     const paint = std(look.livery, 0.32, 0.25);
     const dark = std(0x15171b, 0.55, 0.2);
@@ -332,6 +360,7 @@ export class TruckView {
     // body origin sits a little below the centre of mass
     for (const c of this.body.children) c.position.y -= 0.3;
     this.root.add(this.body);
+    loadBody(lod === "hi" ? hiUrl : loUrl).then((scene) => this.useModel(scene, look)).catch(() => { /* keep the built-in body */ });
 
     // ---- wheels and suspension ----
     const armM = std(0x9aa4b0, 0.3, 0.85);
@@ -371,6 +400,55 @@ export class TruckView {
       shaft.name = "shaft";
       this.root.add(shaft);
       (this.arms[i] as any).shaft = shaft;
+    }
+  }
+
+  /** swap the built-in body for the detailed model, repainted in this truck's livery */
+  private useModel(scene: THREE.Object3D, look: Look) {
+    for (const c of this.body.children) c.visible = false;
+    for (const w of this.whips) w.visible = true;
+    const m = scene.clone(true);
+    m.position.y = -0.6;
+    const paint = std(look.livery, 0.3, 0.3);
+    const mats = new Map<string, THREE.Material>();
+    m.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const src = mesh.material as THREE.MeshStandardMaterial;
+      let mat = mats.get(src.name);
+      if (!mat) {
+        if (PAINT.has(src.name)) mat = paint;
+        else if (LIGHTS.has(src.name)) mat = new THREE.MeshStandardMaterial({ color: 0xfff2c0, emissive: 0xffe08a, emissiveIntensity: 1.2, roughness: 0.3 });
+        else {
+          const sm = src.clone();
+          sm.roughness = src.transparent ? 0.05 : 0.45; sm.metalness = src.transparent ? 0.6 : 0.35;
+          mat = sm;
+        }
+        mats.set(src.name, mat);
+      }
+      mesh.material = mat;
+      mesh.castShadow = !(mat as THREE.Material).transparent;
+    });
+    // our own grille where the maker's one was cut out
+    const grille = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.42, 0.14), std(0x16181c, 0.5, 0.4));
+    grille.position.set(0.02, 0.64, 2.3); m.add(grille);
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.05, 0.02), std(look.accent ?? 0xffffff, 0.4, 0.2));
+    bar.position.set(0.02, 0.64, 2.38); m.add(bar);
+    this.body.add(m);
+    // race numbers on both doors, stuck to wherever the door surface is
+    m.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    const numMat = new THREE.MeshStandardMaterial({ map: numberTex(look.number ?? "11", look.accent ?? 0xffffff), roughness: 0.5, polygonOffset: true, polygonOffsetFactor: -2 });
+    const inv = new THREE.Matrix4().copy(m.matrixWorld).invert();
+    for (const sx of [1, -1]) {
+      const from = new THREE.Vector3(sx * 3, 0.66, -0.05).applyMatrix4(m.matrixWorld);
+      ray.set(from, new THREE.Vector3(-sx, 0, 0).transformDirection(m.matrixWorld));
+      const hit = ray.intersectObject(m, true).find((h) => h.object !== grille && (h.object as THREE.Mesh).material === paint);
+      const p = hit ? hit.point.applyMatrix4(inv) : new THREE.Vector3(sx * 1.05, 0.66, -0.05);
+      const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.48), numMat);
+      plate.position.copy(p).add(new THREE.Vector3(sx * 0.012, 0, 0));
+      plate.rotation.y = sx * Math.PI / 2;
+      m.add(plate);
     }
   }
 
