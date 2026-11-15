@@ -19,6 +19,9 @@
       #lapbox { top: max(12px, env(safe-area-inset-top)); left: 14px; }
       #lap { font-size: 30px; font-variant-numeric: tabular-nums; }
       #best { font-size: 13px; opacity: .95; margin-top: 2px; }
+      #mmap { position: fixed; z-index: 2; left: 10px; top: calc(max(12px, env(safe-area-inset-top)) + 64px); width: min(30vh, 170px); height: min(30vh, 170px);
+        background: rgba(20,14,8,.32); border-radius: 12px; pointer-events: none; display: none; }
+      body.driving.staged #mmap { display: block; }
       #fps { top: 70px; left: 14px; font-size: 11px; display: none; }
       body.debug #fps { display: block; }
       #reset { position: fixed; z-index: 4; top: max(12px, env(safe-area-inset-top)); right: 14px; width: 48px; height: 48px; border-radius: 14px;
@@ -153,6 +156,7 @@
     <button id="reset" aria-label="Reset truck">↺</button>
     <button id="quit" aria-label="Back to stages">☰</button>
     <div class="hud" id="prog"><i id="progfill"></i></div>
+    <canvas class="hud" id="mmap"></canvas>
     <button id="focus" aria-label="Focus slow motion"><div id="focusfill"></div><span>FOCUS</span></button>
     <div id="steerzone"></div>
     <div id="steerhint">◀ SLIDE TO STEER ▶</div>

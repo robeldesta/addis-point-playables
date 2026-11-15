@@ -1,3 +1,4 @@
+import { MiniMap } from "./minimap";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import * as P from "../../src/platform/platform";
@@ -342,6 +343,7 @@ function startStage(i: number) {
   if (isRace()) gridAll(); else placeAtTrack(world.startK - 14);
   for (let s = 0; s < 40; s++) physicsStep(DT);
   progK = world.startK - 14; prog = progK;
+  mmap.build(terrain, world.startK, terrain.loop ? terrain.count - 1 : world.finishK, terrain.loop ? [] : world.gates);
   countT = 3.2; lastCount = 4; stageTime = 0; nextGate = 0; splits.length = 0;
   lapShown = 0; lapStart = 0; bestLap = 0; raceClock = 0;
   camSnap = true;
@@ -779,6 +781,7 @@ function updateCamera(dt: number) {
 // HUD
 // ------------------------------------------------------------------
 const progFill = $("progfill");
+const mmap = new MiniMap($("mmap") as HTMLCanvasElement);
 const offEl = $("offtxt"), focusFill = $("focusfill"), focusBtn = $("focus");
 const spdEl = $("spdv"), lapEl = $("lap"), bestEl = $("best"), fpsEl = $("fps");
 let fpsAcc = 0, fpsN = 0;
@@ -797,6 +800,8 @@ function hud(dt: number) {
     progFill.style.width = `${clamp((prog - world.startK) / (world.finishK - world.startK), 0, 1) * 100}%`;
     }
   }
+  if (mode === "drive") mmap.draw(dt, truck, isRace() ? -1 : prog,
+    rivals.map((r) => ({ x: r.truck.pos.x, z: r.truck.pos.z, color: "#" + r.livery.toString(16).padStart(6, "0") })));
   document.body.classList.toggle("offtrack", mode === "drive" && offTrack && phase === "run");
   offEl.textContent = `OFF ROUTE · TIME x2  +${penalty.toFixed(1)}s`;
   focusFill.style.height = `${focus * 100}%`;
